@@ -65,10 +65,7 @@ export async function ensureRepoCloned(
   }
 }
 
-export async function ensureRepoPrivate(
-  $: Shell,
-  config: SyncConfig
-): Promise<void> {
+export async function ensureRepoPrivate($: Shell, config: SyncConfig): Promise<void> {
   const repoIdentifier = resolveRepoIdentifier(config);
   let output: string;
 
@@ -147,11 +144,7 @@ export async function hasLocalChanges($: Shell, repoDir: string): Promise<boolea
   return lines.length > 0;
 }
 
-export async function commitAll(
-  $: Shell,
-  repoDir: string,
-  message: string
-): Promise<void> {
+export async function commitAll($: Shell, repoDir: string, message: string): Promise<void> {
   try {
     await $`git -C ${repoDir} add -A`;
     await $`git -C ${repoDir} commit -m ${message}`;
@@ -160,11 +153,7 @@ export async function commitAll(
   }
 }
 
-export async function pushBranch(
-  $: Shell,
-  repoDir: string,
-  branch: string
-): Promise<void> {
+export async function pushBranch($: Shell, repoDir: string, branch: string): Promise<void> {
   try {
     await $`git -C ${repoDir} push -u origin ${branch}`;
   } catch (error) {
@@ -220,7 +209,8 @@ async function getAheadBehind(
   remoteRef: string
 ): Promise<{ ahead: number; behind: number }> {
   try {
-    const output = await $`git -C ${repoDir} rev-list --left-right --count HEAD...${remoteRef}`.text();
+    const output =
+      await $`git -C ${repoDir} rev-list --left-right --count HEAD...${remoteRef}`.text();
     const [aheadRaw, behindRaw] = output.trim().split(/\s+/);
     const ahead = Number(aheadRaw ?? 0);
     const behind = Number(behindRaw ?? 0);

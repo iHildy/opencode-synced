@@ -22,6 +22,7 @@ export default tseslint.config(
         console: 'readonly',
         process: 'readonly',
         Buffer: 'readonly',
+        NodeJS: 'readonly',
         // Bun globals
         Bun: 'readonly',
       },
@@ -35,6 +36,8 @@ export default tseslint.config(
       ...tseslint.configs.recommended.rules,
       ...prettier.rules,
       'prettier/prettier': 'error',
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': 'error',

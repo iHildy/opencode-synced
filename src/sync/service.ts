@@ -44,10 +44,10 @@ interface InitOptions {
 export interface SyncService {
   startupSync: () => Promise<void>;
   status: () => Promise<string>;
-  init: (options: InitOptions) => Promise<string>;
+  init: (_options: InitOptions) => Promise<string>;
   pull: () => Promise<string>;
   push: () => Promise<string>;
-  enableSecrets: (extraSecretPaths?: string[]) => Promise<string>;
+  enableSecrets: (_extraSecretPaths?: string[]) => Promise<string>;
 }
 
 export function createSyncService(ctx: SyncServiceContext): SyncService {
@@ -194,10 +194,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         return 'No local changes to push.';
       }
 
-      const message = await generateCommitMessage(
-        { client: ctx.client, $: ctx.$ },
-        repoRoot
-      );
+      const message = await generateCommitMessage({ client: ctx.client, $: ctx.$ }, repoRoot);
       await commitAll(ctx.$, repoRoot, message);
       await pushBranch(ctx.$, repoRoot, branch);
 
@@ -243,14 +240,14 @@ async function runStartup(
   }
 
   const update = await fetchAndFastForward(ctx.$, repoRoot, branch);
-    if (update.updated) {
-      const overrides = await loadOverrides(locations);
-      const plan = buildSyncPlan(config, locations, repoRoot);
-      await syncRepoToLocal(plan, overrides);
-      await writeState(locations, {
-        lastPull: new Date().toISOString(),
-        lastRemoteUpdate: new Date().toISOString(),
-      });
+  if (update.updated) {
+    const overrides = await loadOverrides(locations);
+    const plan = buildSyncPlan(config, locations, repoRoot);
+    await syncRepoToLocal(plan, overrides);
+    await writeState(locations, {
+      lastPull: new Date().toISOString(),
+      lastRemoteUpdate: new Date().toISOString(),
+    });
     await showToast(ctx, 'Config updated. Restart OpenCode to apply.', 'info');
     return;
   }
@@ -281,7 +278,10 @@ async function getConfigOrThrow(
   return config;
 }
 
-async function ensureSecretsPolicy(ctx: SyncServiceContext, config: ReturnType<typeof normalizeSyncConfig>) {
+async function ensureSecretsPolicy(
+  ctx: SyncServiceContext,
+  config: ReturnType<typeof normalizeSyncConfig>
+) {
   if (!config.includeSecrets) return;
   await ensureRepoPrivate(ctx.$, config);
 }
