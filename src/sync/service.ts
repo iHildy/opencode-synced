@@ -371,15 +371,15 @@ async function resolveRepoFromInit($: Shell, options: InitOptions) {
     if (options.repo.includes('://') || options.repo.endsWith('.git')) {
       return { url: options.repo, branch: options.branch };
     }
-    const [owner, name] = options.repo.split('/');
-    if (owner && name) {
-      return { owner, name, branch: options.branch };
+    if (options.repo.includes('/')) {
+      const [owner, name] = options.repo.split('/');
+      if (owner && name) {
+        return { owner, name, branch: options.branch };
+      }
     }
-    // If only a name is provided (no slash), use it as the repo name with auto-detected owner
-    if (options.repo && !options.repo.includes('/')) {
-      const owner = await getAuthenticatedUser($);
-      return { owner, name: options.repo, branch: options.branch };
-    }
+
+    const owner = await getAuthenticatedUser($);
+    return { owner, name: options.repo, branch: options.branch };
   }
 
   // Default: auto-detect owner, use default repo name
