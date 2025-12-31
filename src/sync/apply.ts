@@ -2,6 +2,12 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { deepMerge, parseJsonc, pathExists, stripOverrides, writeJsonFile } from './config.js';
+import {
+  extractMcpSecrets,
+  hasOverrides,
+  mergeOverrides,
+  stripOverrideKeys,
+} from './mcp-secrets.js';
 import type { SyncItem, SyncPlan } from './paths.js';
 import { normalizePath } from './paths.js';
 
@@ -32,11 +38,44 @@ export async function syncRepoToLocal(
 
 export async function syncLocalToRepo(
   plan: SyncPlan,
-  overrides: Record<string, unknown> | null
+  overrides: Record<string, unknown> | null,
+  options: { overridesPath?: string; allowMcpSecrets?: boolean } = {}
 ): Promise<void> {
+  const configItems = plan.items.filter((item) => item.isConfigFile);
+  const sanitizedConfigs = new Map<string, Record<string, unknown>>();
+  let secretOverrides: Record<string, unknown> = {};
+  const allowMcpSecrets = Boolean(options.allowMcpSecrets);
+
+  for (const item of configItems) {
+    if (!(await pathExists(item.localPath))) continue;
+
+    const content = await fs.readFile(item.localPath, 'utf8');
+    const parsed = parseJsonc<Record<string, unknown>>(content);
+    const { sanitizedConfig, secretOverrides: extracted } = extractMcpSecrets(parsed);
+    if (!allowMcpSecrets) {
+      sanitizedConfigs.set(item.localPath, sanitizedConfig);
+    }
+    if (hasOverrides(extracted)) {
+      secretOverrides = mergeOverrides(secretOverrides, extracted);
+    }
+  }
+
+  let overridesForStrip = overrides;
+  if (hasOverrides(secretOverrides)) {
+    if (!allowMcpSecrets) {
+      const baseOverrides = overrides ?? {};
+      const mergedOverrides = mergeOverrides(baseOverrides, secretOverrides);
+      if (options.overridesPath && !isDeepEqual(baseOverrides, mergedOverrides)) {
+        await writeJsonFile(options.overridesPath, mergedOverrides, { jsonc: true });
+      }
+    }
+    overridesForStrip = overrides ? stripOverrideKeys(overrides, secretOverrides) : overrides;
+  }
+
   for (const item of plan.items) {
-    if (item.isConfigFile && overrides && Object.keys(overrides).length > 0) {
-      await copyConfigForRepo(item, overrides, plan.repoRoot);
+    if (item.isConfigFile) {
+      const sanitized = sanitizedConfigs.get(item.localPath);
+      await copyConfigForRepo(item, overridesForStrip, plan.repoRoot, sanitized);
       continue;
     }
 
@@ -70,24 +109,27 @@ async function copyItem(
 
 async function copyConfigForRepo(
   item: SyncItem,
-  overrides: Record<string, unknown>,
-  repoRoot: string
+  overrides: Record<string, unknown> | null,
+  repoRoot: string,
+  configOverride?: Record<string, unknown>
 ): Promise<void> {
   if (!(await pathExists(item.localPath))) {
     await removePath(item.repoPath);
     return;
   }
 
-  const localContent = await fs.readFile(item.localPath, 'utf8');
-  const localConfig = parseJsonc<Record<string, unknown>>(localContent);
+  const localConfig =
+    configOverride ??
+    parseJsonc<Record<string, unknown>>(await fs.readFile(item.localPath, 'utf8'));
   const baseConfig = await readRepoConfig(item, repoRoot);
+  const effectiveOverrides = overrides ?? {};
   if (baseConfig) {
-    const expectedLocal = deepMerge(baseConfig, overrides) as Record<string, unknown>;
+    const expectedLocal = deepMerge(baseConfig, effectiveOverrides) as Record<string, unknown>;
     if (isDeepEqual(localConfig, expectedLocal)) {
       return;
     }
   }
-  const stripped = stripOverrides(localConfig, overrides, baseConfig);
+  const stripped = stripOverrides(localConfig, effectiveOverrides, baseConfig);
   const stat = await fs.stat(item.localPath);
   await fs.mkdir(path.dirname(item.repoPath), { recursive: true });
   await writeJsonFile(item.repoPath, stripped, {

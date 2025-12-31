@@ -125,6 +125,10 @@ export const OpencodeConfigSync: Plugin = async (ctx) => {
       url: tool.schema.string().optional().describe('Repo URL'),
       branch: tool.schema.string().optional().describe('Repo branch'),
       includeSecrets: tool.schema.boolean().optional().describe('Enable secrets sync'),
+      includeMcpSecrets: tool.schema
+        .boolean()
+        .optional()
+        .describe('Allow MCP secrets to be committed (requires includeSecrets)'),
       includeSessions: tool.schema
         .boolean()
         .optional()
@@ -151,6 +155,7 @@ export const OpencodeConfigSync: Plugin = async (ctx) => {
             url: args.url,
             branch: args.branch,
             includeSecrets: args.includeSecrets,
+            includeMcpSecrets: args.includeMcpSecrets,
             includeSessions: args.includeSessions,
             includePromptStash: args.includePromptStash,
             create: args.create,
@@ -171,7 +176,10 @@ export const OpencodeConfigSync: Plugin = async (ctx) => {
           return await service.push();
         }
         if (args.command === 'enable-secrets') {
-          return await service.enableSecrets(args.extraSecretPaths);
+          return await service.enableSecrets({
+            extraSecretPaths: args.extraSecretPaths,
+            includeMcpSecrets: args.includeMcpSecrets,
+          });
         }
         if (args.command === 'resolve') {
           return await service.resolve();

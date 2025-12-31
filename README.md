@@ -78,6 +78,7 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
     "branch": "main",
   },
   "includeSecrets": false,
+  "includeMcpSecrets": false,
   "includeSessions": false,
   "includePromptStash": false,
   "extraSecretPaths": [],
@@ -99,6 +100,9 @@ Enable secrets with `/sync-enable-secrets` or set `"includeSecrets": true`:
 - `~/.local/share/opencode/auth.json`
 - `~/.local/share/opencode/mcp-auth.json`
 - Any extra paths in `extraSecretPaths` (allowlist)
+
+MCP API keys stored inside `opencode.json(c)` are **not** committed by default. To allow them
+in a private repo, set `"includeMcpSecrets": true` (requires `includeSecrets`).
 
 ### Sessions (private repos only)
 
@@ -145,6 +149,22 @@ Create a local-only overrides file at:
 ```
 
 Overrides are merged into the runtime config and re-applied to `opencode.json(c)` after pull.
+
+### MCP secret scrubbing
+
+If your `opencode.json(c)` contains MCP secrets (for example `mcp.*.headers` or `mcp.*.oauth.clientSecret`), opencode-synced will automatically:
+
+1. Move the secret values into `opencode-synced.overrides.jsonc` (local-only).
+2. Replace the values in the synced config with `{env:...}` placeholders.
+
+This keeps secrets out of the repo while preserving local behavior. On other machines, set the matching environment variables (or add local overrides).
+If you want MCP secrets committed (private repos only), set `"includeMcpSecrets": true` alongside `"includeSecrets": true`.
+
+Env var naming rules:
+
+- If the header name already looks like an env var (e.g. `CONTEXT7_API_KEY`), it is used directly.
+- Otherwise: `OPENCODE_MCP_<SERVER>_<HEADER>` (uppercase, non-alphanumerics become `_`).
+- OAuth client secrets use `OPENCODE_MCP_<SERVER>_OAUTH_CLIENT_SECRET`.
 
 ## Usage
 

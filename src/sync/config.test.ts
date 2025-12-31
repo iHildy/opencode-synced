@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { deepMerge, stripOverrides } from './config.js';
+import { canCommitMcpSecrets, deepMerge, normalizeSyncConfig, stripOverrides } from './config.js';
 
 describe('deepMerge', () => {
   it('merges nested objects and replaces arrays', () => {
@@ -42,5 +42,31 @@ describe('stripOverrides', () => {
     const stripped = stripOverrides(local, overrides, base);
 
     expect(stripped).toEqual({ theme: 'opencode', other: true });
+  });
+});
+
+describe('normalizeSyncConfig', () => {
+  it('disables MCP secrets when secrets are disabled', () => {
+    const normalized = normalizeSyncConfig({
+      includeSecrets: false,
+      includeMcpSecrets: true,
+    });
+    expect(normalized.includeMcpSecrets).toBe(false);
+  });
+
+  it('allows MCP secrets when secrets are enabled', () => {
+    const normalized = normalizeSyncConfig({
+      includeSecrets: true,
+      includeMcpSecrets: true,
+    });
+    expect(normalized.includeMcpSecrets).toBe(true);
+  });
+});
+
+describe('canCommitMcpSecrets', () => {
+  it('requires includeSecrets and includeMcpSecrets', () => {
+    expect(canCommitMcpSecrets({ includeSecrets: false, includeMcpSecrets: true })).toBe(false);
+    expect(canCommitMcpSecrets({ includeSecrets: true, includeMcpSecrets: false })).toBe(false);
+    expect(canCommitMcpSecrets({ includeSecrets: true, includeMcpSecrets: true })).toBe(true);
   });
 });

@@ -2,6 +2,7 @@ import type { PluginInput } from '@opencode-ai/plugin';
 import { syncLocalToRepo, syncRepoToLocal } from './apply.js';
 import { generateCommitMessage } from './commit.js';
 import {
+  canCommitMcpSecrets,
   loadOverrides,
   loadState,
   loadSyncConfig,
@@ -45,6 +46,7 @@ interface InitOptions {
   url?: string;
   branch?: string;
   includeSecrets?: boolean;
+  includeMcpSecrets?: boolean;
   includeSessions?: boolean;
   includePromptStash?: boolean;
   create?: boolean;
@@ -64,7 +66,10 @@ export interface SyncService {
   link: (_options: LinkOptions) => Promise<string>;
   pull: () => Promise<string>;
   push: () => Promise<string>;
-  enableSecrets: (_extraSecretPaths?: string[]) => Promise<string>;
+  enableSecrets: (_options?: {
+    extraSecretPaths?: string[];
+    includeMcpSecrets?: boolean;
+  }) => Promise<string>;
   resolve: () => Promise<string>;
 }
 
@@ -76,7 +81,11 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
     startupSync: async () => {
       const config = await loadSyncConfig(locations);
       if (!config) {
-        await showToast(ctx.client, 'Configure opencode-synced with /sync-init.', 'info');
+        await showToast(
+          ctx.client,
+          'Configure opencode-synced with /sync-init or link to an existing repo with /sync-link',
+          'info'
+        );
         return;
       }
       try {
@@ -112,6 +121,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
       const repoIdentifier = resolveRepoIdentifier(config);
       const includeSecrets = config.includeSecrets ? 'enabled' : 'disabled';
+      const includeMcpSecrets = config.includeMcpSecrets ? 'enabled' : 'disabled';
       const includeSessions = config.includeSessions ? 'enabled' : 'disabled';
       const includePromptStash = config.includePromptStash ? 'enabled' : 'disabled';
       const lastPull = state.lastPull ?? 'never';
@@ -131,6 +141,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         `Repo: ${repoIdentifier}`,
         `Branch: ${branch}`,
         `Secrets: ${includeSecrets}`,
+        `MCP secrets: ${includeMcpSecrets}`,
         `Sessions: ${includeSessions}`,
         `Prompt stash: ${includePromptStash}`,
         `Last pull: ${lastPull}`,
@@ -161,7 +172,10 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
       if (created) {
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
-        await syncLocalToRepo(plan, overrides);
+        await syncLocalToRepo(plan, overrides, {
+          overridesPath: locations.overridesPath,
+          allowMcpSecrets: canCommitMcpSecrets(config),
+        });
 
         const dirty = await hasLocalChanges(ctx.$, repoRoot);
         if (dirty) {
@@ -204,6 +218,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
       const config = normalizeSyncConfig({
         repo: { owner: found.owner, name: found.name },
         includeSecrets: false,
+        includeMcpSecrets: false,
         includeSessions: false,
         includePromptStash: false,
         extraSecretPaths: [],
@@ -290,7 +305,10 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
       const overrides = await loadOverrides(locations);
       const plan = buildSyncPlan(config, locations, repoRoot);
-      await syncLocalToRepo(plan, overrides);
+      await syncLocalToRepo(plan, overrides, {
+        overridesPath: locations.overridesPath,
+        allowMcpSecrets: canCommitMcpSecrets(config),
+      });
 
       const dirty = await hasLocalChanges(ctx.$, repoRoot);
       if (!dirty) {
@@ -307,11 +325,17 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
       return `Pushed changes: ${message}`;
     },
-    enableSecrets: async (extraSecretPaths?: string[]) => {
+    enableSecrets: async (options?: {
+      extraSecretPaths?: string[];
+      includeMcpSecrets?: boolean;
+    }) => {
       const config = await getConfigOrThrow(locations);
       config.includeSecrets = true;
-      if (extraSecretPaths) {
-        config.extraSecretPaths = extraSecretPaths;
+      if (options?.extraSecretPaths) {
+        config.extraSecretPaths = options.extraSecretPaths;
+      }
+      if (options?.includeMcpSecrets !== undefined) {
+        config.includeMcpSecrets = options.includeMcpSecrets;
       }
 
       await ensureRepoPrivate(ctx.$, config);
@@ -398,7 +422,10 @@ async function runStartup(
 
   const overrides = await loadOverrides(locations);
   const plan = buildSyncPlan(config, locations, repoRoot);
-  await syncLocalToRepo(plan, overrides);
+  await syncLocalToRepo(plan, overrides, {
+    overridesPath: locations.overridesPath,
+    allowMcpSecrets: canCommitMcpSecrets(config),
+  });
   const changes = await hasLocalChanges(ctx.$, repoRoot);
   if (!changes) {
     log.debug('No local changes to push');
@@ -454,6 +481,7 @@ async function buildConfigFromInit($: Shell, options: InitOptions) {
   return normalizeSyncConfig({
     repo,
     includeSecrets: options.includeSecrets ?? false,
+    includeMcpSecrets: options.includeMcpSecrets ?? false,
     includeSessions: options.includeSessions ?? false,
     includePromptStash: options.includePromptStash ?? false,
     extraSecretPaths: options.extraSecretPaths ?? [],

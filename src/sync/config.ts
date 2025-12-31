@@ -14,6 +14,7 @@ export interface SyncConfig {
   repo?: SyncRepoConfig;
   localRepoPath?: string;
   includeSecrets?: boolean;
+  includeMcpSecrets?: boolean;
   includeSessions?: boolean;
   includePromptStash?: boolean;
   extraSecretPaths?: string[];
@@ -35,14 +36,20 @@ export async function pathExists(filePath: string): Promise<boolean> {
 }
 
 export function normalizeSyncConfig(config: SyncConfig): SyncConfig {
+  const includeSecrets = Boolean(config.includeSecrets);
   return {
-    includeSecrets: Boolean(config.includeSecrets),
+    includeSecrets,
+    includeMcpSecrets: includeSecrets ? Boolean(config.includeMcpSecrets) : false,
     includeSessions: Boolean(config.includeSessions),
     includePromptStash: Boolean(config.includePromptStash),
     extraSecretPaths: Array.isArray(config.extraSecretPaths) ? config.extraSecretPaths : [],
     localRepoPath: config.localRepoPath,
     repo: config.repo,
   };
+}
+
+export function canCommitMcpSecrets(config: SyncConfig): boolean {
+  return Boolean(config.includeSecrets) && Boolean(config.includeMcpSecrets);
 }
 
 export async function loadSyncConfig(locations: SyncLocations): Promise<SyncConfig | null> {
