@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented here by Release Please.
 
+## [0.6.0](https://github.com/iHildy/opencode-synced/compare/v0.5.1...v0.6.0) (2025-12-31)
+
+
+### Features
+
+* support trailing commas in config and improve error handling ([00ae89c](https://github.com/iHildy/opencode-synced/commit/00ae89c5e291e9dd32777e27aab03712257ad81d))
+
 ## [0.5.1](https://github.com/iHildy/opencode-synced/compare/v0.5.0...v0.5.1) (2025-12-31)
 
 
