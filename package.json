@@ -25,8 +25,12 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.10",
+    "@commitlint/cli": "^20.2.0",
+    "@commitlint/config-conventional": "^20.2.0",
     "@types/node": "^20.11.5",
     "bun-types": "latest",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   },
@@ -37,6 +41,10 @@
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "format": "biome format --write .",
-    "check": "biome check --write ."
+    "check": "biome check --write .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{js,ts,json}": ["biome check --write --no-errors-on-unmatched"]
   }
 }

@@ -415,7 +415,9 @@ async function showToast(
   message: string,
   variant: ToastVariant
 ): Promise<void> {
-  await ctx.client.tui.showToast({ body: { title: `opencode-synced plugin`, message: `${message}`, variant } });
+  await ctx.client.tui.showToast({
+    body: { title: `opencode-synced plugin`, message: `${message}`, variant },
+  });
 }
 
 function formatError(error: unknown): string {

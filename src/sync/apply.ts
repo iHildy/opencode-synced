@@ -1,5 +1,5 @@
-import { promises as fs } from 'fs';
-import path from 'path';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 
 import { deepMerge, parseJsonc, pathExists, stripOverrides, writeJsonFile } from './config.ts';
 import type { SyncItem, SyncPlan } from './paths.ts';
@@ -241,7 +241,7 @@ function isDeepEqual(left: unknown, right: unknown): boolean {
     const rightKeys = Object.keys(right as Record<string, unknown>);
     if (leftKeys.length !== rightKeys.length) return false;
     for (const key of leftKeys) {
-      if (!Object.prototype.hasOwnProperty.call(right, key)) return false;
+      if (!Object.hasOwn(right, key)) return false;
       if (
         !isDeepEqual(
           (left as Record<string, unknown>)[key],
