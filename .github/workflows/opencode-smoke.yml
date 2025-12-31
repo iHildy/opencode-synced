@@ -10,7 +10,7 @@ on:
       timeout:
         description: 'seconds to wait before considering opencode stable'
         required: false
-        default: '20'
+        default: '30'
   workflow_call:
     inputs:
       tag:
@@ -19,7 +19,7 @@ on:
       timeout:
         type: number
         required: false
-        default: 20
+        default: 30
 
 jobs:
   smoke:
@@ -75,6 +75,7 @@ jobs:
         env:
           OPENCODE_HOME: ${{ runner.temp }}/opencode-home
           OPENCODE_SMOKE_TIMEOUT: ${{ inputs.timeout }}
+          OPENCODE_SMOKE_LOG: ${{ runner.temp }}/opencode-smoke.log
         run: |
           export HOME="$OPENCODE_HOME"
           export XDG_CONFIG_HOME="$HOME/.config"
@@ -84,11 +85,13 @@ jobs:
 
           python - <<'PY'
           import os
+          import threading
           import subprocess
           import time
           import sys
 
           timeout = int(os.environ.get("OPENCODE_SMOKE_TIMEOUT", "20"))
+          log_path = os.environ.get("OPENCODE_SMOKE_LOG", "opencode-smoke.log")
           cmd = ["opencode", "serve", "--port", "4096", "--hostname", "127.0.0.1"]
 
           proc = subprocess.Popen(
@@ -98,12 +101,32 @@ jobs:
               text=True,
           )
 
-          time.sleep(timeout)
+          def reader():
+              if not proc.stdout:
+                  return
+              with open(log_path, "w") as log_file:
+                  for line in proc.stdout:
+                      log_file.write(line)
+
+          thread = threading.Thread(target=reader, daemon=True)
+          thread.start()
+
+          start = time.time()
+          while time.time() - start < timeout:
+              if proc.poll() is not None:
+                  break
+              time.sleep(1)
 
           if proc.poll() is not None:
-              output = proc.stdout.read() if proc.stdout else ""
               print("opencode exited early with code", proc.returncode)
-              print(output)
+              try:
+                  with open(log_path, "r") as log_file:
+                      lines = log_file.readlines()
+                  tail = "".join(lines[-200:])
+                  print("--- opencode output (tail) ---")
+                  print(tail)
+              except FileNotFoundError:
+                  print("No log output captured.")
               sys.exit(1)
 
           proc.terminate()
@@ -113,3 +136,10 @@ jobs:
               proc.kill()
               proc.wait()
           PY
+
+      - name: Upload opencode logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-smoke-logs-${{ matrix.os }}
+          path: ${{ runner.temp }}/opencode-smoke.log
