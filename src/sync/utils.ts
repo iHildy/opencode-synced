@@ -43,9 +43,13 @@ export async function showToast(
   message: string,
   variant: 'info' | 'success' | 'warning' | 'error'
 ): Promise<void> {
-  await client.tui.showToast({
-    body: { title: 'opencode-synced plugin', message, variant },
-  });
+  try {
+    await client.tui.showToast({
+      body: { title: 'opencode-synced plugin', message, variant },
+    });
+  } catch {
+    // Ignore toast failures (e.g. headless mode or early startup).
+  }
 }
 
 export function unwrapData<T>(response: unknown): T | null {

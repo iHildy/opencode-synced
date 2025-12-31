@@ -69,6 +69,22 @@ jobs:
           }
           EOF
 
+          SYNC_REPO="$XDG_DATA_HOME/opencode-synced/repo"
+          mkdir -p "$SYNC_REPO"
+          git -C "$SYNC_REPO" init -q
+
+          cat > "$XDG_CONFIG_HOME/opencode/opencode-synced.jsonc" <<EOF
+          {
+            "repo": {
+              "owner": "smoke",
+              "name": "opencode-config",
+            },
+            "localRepoPath": "$SYNC_REPO",
+            "includeSecrets": false,
+            "extraSecretPaths": [],
+          }
+          EOF
+
           rm -rf "$XDG_CACHE_HOME/opencode/node_modules"
 
       - name: Launch opencode (smoke)

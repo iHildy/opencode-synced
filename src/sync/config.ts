@@ -161,7 +161,7 @@ export function stripOverrides(
 }
 
 export function parseJsonc<T>(content: string): T {
-  const stripped = stripJsonComments(content);
+  const stripped = stripTrailingCommas(stripJsonComments(content));
   return JSON.parse(stripped) as T;
 }
 
@@ -246,6 +246,53 @@ function stripJsonComments(input: string): string {
       inMultiLine = true;
       i += 1;
       continue;
+    }
+
+    output += current;
+  }
+
+  return output;
+}
+
+function stripTrailingCommas(input: string): string {
+  let output = '';
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const current = input[i];
+
+    if (inString) {
+      output += current;
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (current === '\\') {
+        escapeNext = true;
+        continue;
+      }
+      if (current === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (current === '"') {
+      inString = true;
+      output += current;
+      continue;
+    }
+
+    if (current === ',') {
+      let nextIndex = i + 1;
+      while (nextIndex < input.length && /\s/.test(input[nextIndex])) {
+        nextIndex += 1;
+      }
+      const next = input[nextIndex];
+      if (next === '}' || next === ']') {
+        continue;
+      }
     }
 
     output += current;
