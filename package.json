@@ -41,7 +41,7 @@
     "vitest": "^3.2.4"
   },
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir dist --target bun && tsc -p tsconfig.build.json && cp -R src/command dist/command",
+    "build": "rm -rf dist && bun build ./src/index.ts --outdir dist --target bun && tsc -p tsconfig.build.json && cp -r src/command dist/command",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
