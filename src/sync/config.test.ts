@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { deepMerge, stripOverrides } from './config.ts';
+import { deepMerge, stripOverrides } from './config.js';
 
 describe('deepMerge', () => {
   it('merges nested objects and replaces arrays', () => {

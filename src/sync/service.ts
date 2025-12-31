@@ -1,6 +1,6 @@
 import type { PluginInput } from '@opencode-ai/plugin';
-import { syncLocalToRepo, syncRepoToLocal } from './apply.ts';
-import { generateCommitMessage } from './commit.ts';
+import { syncLocalToRepo, syncRepoToLocal } from './apply.js';
+import { generateCommitMessage } from './commit.js';
 import {
   loadOverrides,
   loadState,
@@ -8,9 +8,9 @@ import {
   normalizeSyncConfig,
   writeState,
   writeSyncConfig,
-} from './config.ts';
-import { SyncCommandError, SyncConfigMissingError } from './errors.ts';
-import { buildSyncPlan, resolveRepoRoot, resolveSyncLocations } from './paths.ts';
+} from './config.js';
+import { SyncCommandError, SyncConfigMissingError } from './errors.js';
+import { buildSyncPlan, resolveRepoRoot, resolveSyncLocations } from './paths.js';
 import {
   commitAll,
   ensureRepoCloned,
@@ -25,14 +25,14 @@ import {
   repoExists,
   resolveRepoBranch,
   resolveRepoIdentifier,
-} from './repo.ts';
+} from './repo.js';
 import {
   createLogger,
   extractTextFromResponse,
   resolveSmallModel,
   showToast,
   unwrapData,
-} from './utils.ts';
+} from './utils.js';
 
 type SyncServiceContext = Pick<PluginInput, 'client' | '$'>;
 type Logger = ReturnType<typeof createLogger>;

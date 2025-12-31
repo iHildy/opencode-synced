@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseRepoVisibility } from './repo.ts';
+import { parseRepoVisibility } from './repo.js';
 
 describe('parseRepoVisibility', () => {
   it('parses private status', () => {

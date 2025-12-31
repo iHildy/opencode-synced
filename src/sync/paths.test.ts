@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SyncConfig } from './config.ts';
-import { buildSyncPlan, resolveSyncLocations, resolveXdgPaths } from './paths.ts';
+import type { SyncConfig } from './config.js';
+import { buildSyncPlan, resolveSyncLocations, resolveXdgPaths } from './paths.js';
 
 describe('resolveXdgPaths', () => {
   it('resolves linux defaults', () => {

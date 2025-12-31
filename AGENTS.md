@@ -23,7 +23,7 @@
 
 - Use ES6 `import`/`export` syntax (module: "ESNext", type: "module")
 - Group imports: external libraries first, then internal modules
-- Use explicit file extensions (`.ts`) for internal imports
+- Use explicit file extensions (`.js`) for internal imports
 
 ### Formatting (Biome)
 
