@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
-#MISE description="Run ESLint"
-eslint . --ext .ts
+#MISE description="Run Biome lint"
+biome lint .
