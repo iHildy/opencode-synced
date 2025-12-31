@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented here by Release Please.
 
+## [0.5.0](https://github.com/iHildy/opencode-synced/compare/v0.4.2...v0.5.0) (2025-12-31)
+
+
+### Features
+
+* implement MCP secret scrubbing and optional sync ([49b8116](https://github.com/iHildy/opencode-synced/commit/49b8116f03c2dd4a37e66f68ed30bb812edc75b5))
+
+
+### Bug Fixes
+
+* generalize authorization scheme matching in mcp secrets ([3a50890](https://github.com/iHildy/opencode-synced/commit/3a50890d86180c5ded4e1b71a81cf00a6097acf4))
+
 ## [0.4.2](https://github.com/iHildy/opencode-synced/compare/v0.4.1...v0.4.2) (2025-12-31)
 
 

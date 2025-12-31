@@ -1,6 +1,6 @@
 {
   "name": "opencode-synced",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Sync global OpenCode config across machines via GitHub.",
   "author": {
     "name": "Ian Hildebrand"
