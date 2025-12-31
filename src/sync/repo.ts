@@ -59,7 +59,7 @@ export async function ensureRepoCloned(
   const repoIdentifier = resolveRepoIdentifier(config);
 
   try {
-    await $`gh repo clone ${repoIdentifier} ${repoDir}`;
+    await $`gh repo clone ${repoIdentifier} ${repoDir}`.quiet();
   } catch (error) {
     throw new SyncCommandError(`Failed to clone repo: ${formatError(error)}`);
   }
@@ -70,7 +70,7 @@ export async function ensureRepoPrivate($: Shell, config: SyncConfig): Promise<v
   let output: string;
 
   try {
-    output = await $`gh repo view ${repoIdentifier} --json isPrivate`.text();
+    output = await $`gh repo view ${repoIdentifier} --json isPrivate`.quiet().text();
   } catch (error) {
     throw new RepoVisibilityError(`Unable to verify repo visibility: ${formatError(error)}`);
   }
@@ -101,7 +101,7 @@ export async function fetchAndFastForward(
   branch: string
 ): Promise<RepoUpdateResult> {
   try {
-    await $`git -C ${repoDir} fetch --prune`;
+    await $`git -C ${repoDir} fetch --prune`.quiet();
   } catch (error) {
     throw new SyncCommandError(`Failed to fetch repo: ${formatError(error)}`);
   }
@@ -123,7 +123,7 @@ export async function fetchAndFastForward(
 
   if (behind > 0) {
     try {
-      await $`git -C ${repoDir} merge --ff-only ${remoteRef}`;
+      await $`git -C ${repoDir} merge --ff-only ${remoteRef}`.quiet();
       return { updated: true, branch };
     } catch (error) {
       throw new SyncCommandError(`Failed to fast-forward: ${formatError(error)}`);
@@ -146,8 +146,8 @@ export async function hasLocalChanges($: Shell, repoDir: string): Promise<boolea
 
 export async function commitAll($: Shell, repoDir: string, message: string): Promise<void> {
   try {
-    await $`git -C ${repoDir} add -A`;
-    await $`git -C ${repoDir} commit -m ${message}`;
+    await $`git -C ${repoDir} add -A`.quiet();
+    await $`git -C ${repoDir} commit -m ${message}`.quiet();
   } catch (error) {
     throw new SyncCommandError(`Failed to commit changes: ${formatError(error)}`);
   }
@@ -155,7 +155,7 @@ export async function commitAll($: Shell, repoDir: string, message: string): Pro
 
 export async function pushBranch($: Shell, repoDir: string, branch: string): Promise<void> {
   try {
-    await $`git -C ${repoDir} push -u origin ${branch}`;
+    await $`git -C ${repoDir} push -u origin ${branch}`.quiet();
   } catch (error) {
     throw new SyncCommandError(`Failed to push changes: ${formatError(error)}`);
   }
@@ -163,7 +163,7 @@ export async function pushBranch($: Shell, repoDir: string, branch: string): Pro
 
 async function getCurrentBranch($: Shell, repoDir: string): Promise<string> {
   try {
-    const output = await $`git -C ${repoDir} rev-parse --abbrev-ref HEAD`.text();
+    const output = await $`git -C ${repoDir} rev-parse --abbrev-ref HEAD`.quiet().text();
     const branch = output.trim();
     if (!branch || branch === 'HEAD') return 'main';
     return branch;
@@ -176,10 +176,10 @@ async function checkoutBranch($: Shell, repoDir: string, branch: string): Promis
   const exists = await hasLocalBranch($, repoDir, branch);
   try {
     if (exists) {
-      await $`git -C ${repoDir} checkout ${branch}`;
+      await $`git -C ${repoDir} checkout ${branch}`.quiet();
       return;
     }
-    await $`git -C ${repoDir} checkout -b ${branch}`;
+    await $`git -C ${repoDir} checkout -b ${branch}`.quiet();
   } catch (error) {
     throw new SyncCommandError(`Failed to checkout branch: ${formatError(error)}`);
   }
@@ -187,7 +187,7 @@ async function checkoutBranch($: Shell, repoDir: string, branch: string): Promis
 
 async function hasLocalBranch($: Shell, repoDir: string, branch: string): Promise<boolean> {
   try {
-    await $`git -C ${repoDir} show-ref --verify refs/heads/${branch}`;
+    await $`git -C ${repoDir} show-ref --verify refs/heads/${branch}`.quiet();
     return true;
   } catch {
     return false;
@@ -196,7 +196,7 @@ async function hasLocalBranch($: Shell, repoDir: string, branch: string): Promis
 
 async function hasRemoteRef($: Shell, repoDir: string, branch: string): Promise<boolean> {
   try {
-    await $`git -C ${repoDir} show-ref --verify refs/remotes/origin/${branch}`;
+    await $`git -C ${repoDir} show-ref --verify refs/remotes/origin/${branch}`.quiet();
     return true;
   } catch {
     return false;
@@ -209,8 +209,9 @@ async function getAheadBehind(
   remoteRef: string
 ): Promise<{ ahead: number; behind: number }> {
   try {
-    const output =
-      await $`git -C ${repoDir} rev-list --left-right --count HEAD...${remoteRef}`.text();
+    const output = await $`git -C ${repoDir} rev-list --left-right --count HEAD...${remoteRef}`
+      .quiet()
+      .text();
     const [aheadRaw, behindRaw] = output.trim().split(/\s+/);
     const ahead = Number(aheadRaw ?? 0);
     const behind = Number(behindRaw ?? 0);
@@ -222,7 +223,7 @@ async function getAheadBehind(
 
 async function getStatusLines($: Shell, repoDir: string): Promise<string[]> {
   try {
-    const output = await $`git -C ${repoDir} status --porcelain`.text();
+    const output = await $`git -C ${repoDir} status --porcelain`.quiet().text();
     return output
       .split('\n')
       .map((line) => line.trim())
@@ -239,7 +240,7 @@ function formatError(error: unknown): string {
 
 export async function repoExists($: Shell, repoIdentifier: string): Promise<boolean> {
   try {
-    await $`gh repo view ${repoIdentifier} --json name`;
+    await $`gh repo view ${repoIdentifier} --json name`.quiet();
     return true;
   } catch {
     return false;
@@ -248,11 +249,59 @@ export async function repoExists($: Shell, repoIdentifier: string): Promise<bool
 
 export async function getAuthenticatedUser($: Shell): Promise<string> {
   try {
-    const output = await $`gh api user --jq .login`.text();
+    const output = await $`gh api user --jq .login`.quiet().text();
     return output.trim();
   } catch (error) {
     throw new SyncCommandError(
       `Failed to detect GitHub user. Ensure gh is authenticated: ${formatError(error)}`
     );
+  }
+}
+
+const LIKELY_SYNC_REPO_NAMES = [
+  'my-opencode-config',
+  'opencode-config',
+  'opencode-sync',
+  'opencode-synced',
+  'dotfiles-opencode',
+];
+
+export interface FoundRepo {
+  owner: string;
+  name: string;
+  isPrivate: boolean;
+}
+
+export async function findSyncRepo($: Shell, repoName?: string): Promise<FoundRepo | null> {
+  const owner = await getAuthenticatedUser($);
+
+  // If user provided a specific name, check that first
+  if (repoName) {
+    const exists = await repoExists($, `${owner}/${repoName}`);
+    if (exists) {
+      const isPrivate = await checkRepoPrivate($, `${owner}/${repoName}`);
+      return { owner, name: repoName, isPrivate };
+    }
+    return null;
+  }
+
+  // Search through likely repo names
+  for (const name of LIKELY_SYNC_REPO_NAMES) {
+    const exists = await repoExists($, `${owner}/${name}`);
+    if (exists) {
+      const isPrivate = await checkRepoPrivate($, `${owner}/${name}`);
+      return { owner, name, isPrivate };
+    }
+  }
+
+  return null;
+}
+
+async function checkRepoPrivate($: Shell, repoIdentifier: string): Promise<boolean> {
+  try {
+    const output = await $`gh repo view ${repoIdentifier} --json isPrivate`.quiet().text();
+    return parseRepoVisibility(output);
+  } catch {
+    return false;
   }
 }

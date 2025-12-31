@@ -37,13 +37,25 @@ opencode
 
 ## Configure
 
-Run `/sync-init` to get started. This will:
+### First machine (create new sync repo)
 
-1. Detect your GitHub username from the CLI
-2. Create a private repo (`my-opencode-config` by default) if it doesn't exist
-3. Clone the repo and set up sync
+Run `/sync-init` to create a new sync repo:
 
-That's it! Your config will now sync automatically on startup.
+1. Detects your GitHub username
+2. Creates a private repo (`my-opencode-config` by default)
+3. Clones the repo and pushes your current config
+
+### Additional machines (link to existing repo)
+
+Run `/sync-link` to connect to your existing sync repo:
+
+1. Searches your GitHub for common sync repo names (prioritizes `my-opencode-config`)
+2. Clones and applies the synced config
+3. **Overwrites local config** with synced content (preserves your local overrides file)
+
+If auto-detection fails, specify the repo name: `/sync-link my-opencode-config`
+
+After linking, restart OpenCode to apply the synced settings.
 
 ### Custom repo name or org
 
@@ -136,12 +148,15 @@ Overrides are merged into the runtime config and re-applied to `opencode.json(c)
 
 ## Usage
 
-- `/sync-init` to set up sync (creates repo if needed)
-- `/sync-status` for repo status and last sync
-- `/sync-pull` to fetch and apply remote config
-- `/sync-push` to commit and push local changes
-- `/sync-enable-secrets` to opt in to secrets sync
-- `/sync-resolve` to automatically resolve uncommitted changes using AI
+| Command | Description |
+|---------|-------------|
+| `/sync-init` | Create a new sync repo (first machine) |
+| `/sync-link` | Link to existing sync repo (additional machines) |
+| `/sync-status` | Show repo status and last sync times |
+| `/sync-pull` | Fetch and apply remote config |
+| `/sync-push` | Commit and push local changes |
+| `/sync-enable-secrets` | Enable secrets sync (private repos only) |
+| `/sync-resolve` | Auto-resolve uncommitted changes using AI |
 
 <details>
 <summary>Manual sync (without slash commands)</summary>
@@ -177,9 +192,62 @@ git pull --rebase
 
 Then re-run `/sync-pull` or `/sync-push`.
 
+## Removal
+
+<details>
+<summary>How to completely remove and delete opencode-synced</summary>
+
+Run this one-liner to remove the plugin from your config, delete local sync files, and delete the GitHub repository:
+
+```bash
+bun -e '
+  const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), { spawnSync } = require("node:child_process");
+  const isWin = os.platform() === "win32", home = os.homedir();
+  const configDir = isWin ? path.join(process.env.APPDATA, "opencode") : path.join(home, ".config", "opencode");
+  const dataDir = isWin ? path.join(process.env.LOCALAPPDATA, "opencode") : path.join(home, ".local", "share", "opencode");
+  ["opencode.json", "opencode.jsonc"].forEach(f => {
+    const p = path.join(configDir, f);
+    if (fs.existsSync(p)) {
+      const c = fs.readFileSync(p, "utf8"), u = c.replace(/"opencode-synced"\s*,?\s*/g, "").replace(/,\s*\]/g, "]");
+      if (c !== u) fs.writeFileSync(p, u);
+    }
+  });
+  const scp = path.join(configDir, "opencode-synced.jsonc");
+  if (fs.existsSync(scp)) {
+    try {
+      const c = JSON.parse(fs.readFileSync(scp, "utf8").replace(/\/\/.*/g, ""));
+      if (c.repo?.owner && c.repo?.name) {
+        const res = spawnSync("gh", ["repo", "delete", `${c.repo.owner}/${c.repo.name}`, "--yes"], { stdio: "inherit" });
+        if (res.status !== 0) console.log("\nNote: Repository delete failed. If it is a permission error, run: gh auth refresh -s delete_repo\n");
+      }
+    } catch (e) {}
+  }
+  [scp, path.join(configDir, "opencode-synced.overrides.jsonc"), path.join(dataDir, "sync-state.json"), path.join(dataDir, "opencode-synced")].forEach(p => {
+    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+  });
+  console.log("opencode-synced removed.");
+'
+```
+
+### Manual steps
+1. Remove `"opencode-synced"` from the `plugin` array in `~/.config/opencode/opencode.json` (or `.jsonc`).
+2. Delete the local configuration and state:
+   ```bash
+   rm ~/.config/opencode/opencode-synced.jsonc
+   rm ~/.local/share/opencode/sync-state.json
+   rm -rf ~/.local/share/opencode/opencode-synced
+   ```
+3. (Optional) Delete the backup repository on GitHub via the web UI or `gh repo delete`.
+
+</details>
+
 ## Development
 
 - `bun run build`
 - `bun run test`
 - `bun run lint`
 
+
+## Prefer a CLI version?
+
+I stumbled upon [opencodesync](https://www.npmjs.com/package/opencodesync) while publishing this plugin.

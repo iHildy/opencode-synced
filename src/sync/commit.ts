@@ -73,8 +73,8 @@ function sanitizeMessage(message: string): string {
 
 async function getDiffSummary($: Shell, repoDir: string): Promise<string> {
   try {
-    const nameStatus = await $`git -C ${repoDir} diff --name-status`.text();
-    const stats = await $`git -C ${repoDir} diff --stat`.text();
+    const nameStatus = await $`git -C ${repoDir} diff --name-status`.quiet().text();
+    const stats = await $`git -C ${repoDir} diff --stat`.quiet().text();
     return [nameStatus.trim(), stats.trim()].filter(Boolean).join('\n');
   } catch {
     return '';

@@ -2,6 +2,52 @@ import type { PluginInput } from '@opencode-ai/plugin';
 
 type Client = PluginInput['client'];
 
+const SERVICE_NAME = 'opencode-synced';
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+export function createLogger(client: Client) {
+  return {
+    debug: (message: string, extra?: Record<string, unknown>) =>
+      log(client, 'debug', message, extra),
+    info: (message: string, extra?: Record<string, unknown>) => log(client, 'info', message, extra),
+    warn: (message: string, extra?: Record<string, unknown>) => log(client, 'warn', message, extra),
+    error: (message: string, extra?: Record<string, unknown>) =>
+      log(client, 'error', message, extra),
+  };
+}
+
+function log(
+  client: Client,
+  level: LogLevel,
+  message: string,
+  extra?: Record<string, unknown>
+): void {
+  client.app
+    .log({
+      body: {
+        service: SERVICE_NAME,
+        level,
+        message,
+        extra,
+      },
+    })
+    .catch((err) => {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      showToast(client, `Logging failed: ${errorMsg}`, 'error');
+    });
+}
+
+export async function showToast(
+  client: Client,
+  message: string,
+  variant: 'info' | 'success' | 'warning' | 'error'
+): Promise<void> {
+  await client.tui.showToast({
+    body: { title: 'opencode-synced plugin', message, variant },
+  });
+}
+
 export function unwrapData<T>(response: unknown): T | null {
   if (!response || typeof response !== 'object') return null;
   const maybeError = (response as { error?: unknown }).error;
