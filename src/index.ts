@@ -72,13 +72,6 @@ export const OpencodeConfigSync: Plugin = async (ctx) => {
   const commands = await loadCommands();
   const service = createSyncService(ctx);
 
-  const start = () => {
-    void service.startupSync();
-  };
-
-  // Fallback to ensure startup sync runs even if server.connected event is missed
-  const timer = setTimeout(start, 3000);
-
   const syncTool = tool({
     description: 'Manage OpenCode config sync with a GitHub repo',
     args: {
@@ -148,16 +141,12 @@ export const OpencodeConfigSync: Plugin = async (ctx) => {
     },
   });
 
-  // Attempt startup sync immediately (will be a no-op if already run via event)
-  void service.startupSync();
+  // Delay startup sync slightly to ensure TUI is connected
+  setTimeout(() => {
+    void service.startupSync();
+  }, 1000);
 
   return {
-    event: async ({ event }) => {
-      if (event.type === 'server.connected') {
-        clearTimeout(timer);
-        start();
-      }
-    },
     tool: {
       opencode_sync: syncTool,
     },

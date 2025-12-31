@@ -58,13 +58,9 @@ export interface SyncService {
 
 export function createSyncService(ctx: SyncServiceContext): SyncService {
   const locations = resolveSyncLocations();
-  let startupSyncStarted = false;
 
   return {
     startupSync: async () => {
-      if (startupSyncStarted) return;
-      startupSyncStarted = true;
-
       try {
         const config = await loadSyncConfig(locations);
         if (!config) {
