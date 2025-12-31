@@ -14,11 +14,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/iHildy/opencode-sync.git"
+    "url": "git+https://github.com/iHildy/opencode-sync.git"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "files": [
     "dist"
