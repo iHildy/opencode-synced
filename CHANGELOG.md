@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented here by Release Please.
 
+## [0.4.1](https://github.com/iHildy/opencode-synced/compare/v0.4.0...v0.4.1) (2025-12-31)
+
+
+### Bug Fixes
+
+* use .js extensions in missed imports and update convention ([bae3ebb](https://github.com/iHildy/opencode-synced/commit/bae3ebb7fbc3696965190d49d29deaa3e3ca6f3f))
+
 ## [0.4.0](https://github.com/iHildy/opencode-synced/compare/v0.3.0...v0.4.0) (2025-12-31)
 
 
