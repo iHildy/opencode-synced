@@ -87,8 +87,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
     return `Another sync is already in progress (pid ${info.pid} on ${info.hostname}, started ${info.startedAt}).`;
   };
 
-  const runExclusive = async <T>(fn: () => Promise<T>): Promise<T> =>
-    await withSyncLock(
+  const runExclusive = <T>(fn: () => Promise<T>): Promise<T> =>
+    withSyncLock(
       lockPath,
       {
         onBusy: (info) => {
@@ -98,11 +98,11 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
       fn
     );
 
-  const skipIfBusy = async (fn: () => Promise<void>): Promise<void> =>
-    await withSyncLock(
+  const skipIfBusy = (fn: () => Promise<void>): Promise<void> =>
+    withSyncLock(
       lockPath,
       {
-        onBusy: async (info) => {
+        onBusy: (info) => {
           log.debug('Sync already running, skipping', {
             pid: info?.pid,
             hostname: info?.hostname,
@@ -115,8 +115,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
     );
 
   return {
-    startupSync: async () =>
-      await skipIfBusy(async () => {
+    startupSync: () =>
+      skipIfBusy(async () => {
         let config: ReturnType<typeof normalizeSyncConfig> | null = null;
         try {
           config = await loadSyncConfig(locations);
@@ -201,8 +201,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
       return statusLines.join('\n');
     },
-    init: async (options: InitOptions) =>
-      await runExclusive(async () => {
+    init: (options: InitOptions) =>
+      runExclusive(async () => {
         const config = await buildConfigFromInit(ctx.$, options);
 
         const repoIdentifier = resolveRepoIdentifier(config);
@@ -246,8 +246,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         return lines.join('\n');
       }),
-    link: async (options: LinkOptions) =>
-      await runExclusive(async () => {
+    link: (options: LinkOptions) =>
+      runExclusive(async () => {
         const found = await findSyncRepo(ctx.$, options.repo);
 
         if (!found) {
@@ -309,8 +309,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         await showToast(ctx.client, 'Config synced. Restart OpenCode to apply.', 'info');
         return lines.join('\n');
       }),
-    pull: async () =>
-      await runExclusive(async () => {
+    pull: () =>
+      runExclusive(async () => {
         const config = await getConfigOrThrow(locations);
         const repoRoot = resolveRepoRoot(config, locations);
         await ensureRepoCloned(ctx.$, config, repoRoot);
@@ -342,8 +342,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         await showToast(ctx.client, 'Config updated. Restart OpenCode to apply.', 'info');
         return 'Remote config applied. Restart OpenCode to use new settings.';
       }),
-    push: async () =>
-      await runExclusive(async () => {
+    push: () =>
+      runExclusive(async () => {
         const config = await getConfigOrThrow(locations);
         const repoRoot = resolveRepoRoot(config, locations);
         await ensureRepoCloned(ctx.$, config, repoRoot);
@@ -379,8 +379,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         return `Pushed changes: ${message}`;
       }),
-    enableSecrets: async (options?: { extraSecretPaths?: string[]; includeMcpSecrets?: boolean }) =>
-      await runExclusive(async () => {
+    enableSecrets: (options?: { extraSecretPaths?: string[]; includeMcpSecrets?: boolean }) =>
+      runExclusive(async () => {
         const config = await getConfigOrThrow(locations);
         config.includeSecrets = true;
         if (options?.extraSecretPaths) {
@@ -395,8 +395,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         return 'Secrets sync enabled for this repo.';
       }),
-    resolve: async () =>
-      await runExclusive(async () => {
+    resolve: () =>
+      runExclusive(async () => {
         const config = await getConfigOrThrow(locations);
         const repoRoot = resolveRepoRoot(config, locations);
         await ensureRepoCloned(ctx.$, config, repoRoot);

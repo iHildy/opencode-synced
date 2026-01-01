@@ -55,7 +55,8 @@ export async function tryAcquireSyncLock(lockPath: string): Promise<SyncLockResu
     hostname: os.hostname(),
   };
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  let attempt = 0;
+  while (true) {
     try {
       const handle = await open(lockPath, 'wx');
       await handle.writeFile(`${JSON.stringify(ourInfo, null, 2)}\n`, 'utf8');
@@ -79,14 +80,13 @@ export async function tryAcquireSyncLock(lockPath: string): Promise<SyncLockResu
       const shouldBreakLock = existing === null || !isProcessAlive(existing.pid);
       if (attempt === 0 && shouldBreakLock) {
         await rm(lockPath, { force: true });
+        attempt += 1;
         continue;
       }
 
       return { acquired: false, info: existing };
     }
   }
-
-  return { acquired: false, info: await readLockInfo(lockPath) };
 }
 
 export async function withSyncLock<T>(
