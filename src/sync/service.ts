@@ -79,7 +79,19 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
   return {
     startupSync: async () => {
-      const config = await loadSyncConfig(locations);
+      let config: ReturnType<typeof normalizeSyncConfig> | null = null;
+      try {
+        config = await loadSyncConfig(locations);
+      } catch (error) {
+        const message = `Failed to load opencode-synced config: ${formatError(error)}`;
+        log.error(message, { path: locations.syncConfigPath });
+        await showToast(
+          ctx.client,
+          `Failed to load opencode-synced config. Check ${locations.syncConfigPath} for JSON errors.`,
+          'error'
+        );
+        return;
+      }
       if (!config) {
         await showToast(
           ctx.client,

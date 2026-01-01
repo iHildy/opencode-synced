@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { canCommitMcpSecrets, deepMerge, normalizeSyncConfig, stripOverrides } from './config.js';
+import {
+  canCommitMcpSecrets,
+  deepMerge,
+  normalizeSyncConfig,
+  parseJsonc,
+  stripOverrides,
+} from './config.js';
 
 describe('deepMerge', () => {
   it('merges nested objects and replaces arrays', () => {
@@ -68,5 +74,27 @@ describe('canCommitMcpSecrets', () => {
     expect(canCommitMcpSecrets({ includeSecrets: false, includeMcpSecrets: true })).toBe(false);
     expect(canCommitMcpSecrets({ includeSecrets: true, includeMcpSecrets: false })).toBe(false);
     expect(canCommitMcpSecrets({ includeSecrets: true, includeMcpSecrets: true })).toBe(true);
+  });
+});
+
+describe('parseJsonc', () => {
+  it('parses JSONC with comments and trailing commas', () => {
+    const input = `{
+      // comment
+      "repo": {
+        "owner": "me",
+        "name": "opencode-config",
+      },
+      "includeSecrets": false,
+      "extraSecretPaths": [
+        "foo",
+      ],
+    }`;
+
+    expect(parseJsonc(input)).toEqual({
+      repo: { owner: 'me', name: 'opencode-config' },
+      includeSecrets: false,
+      extraSecretPaths: ['foo'],
+    });
   });
 });
