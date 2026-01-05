@@ -158,7 +158,7 @@ If you want MCP secrets committed (private repos only), set `"includeMcpSecrets"
 Env var naming rules:
 
 - If the header name already looks like an env var (e.g. `CONTEXT7_API_KEY`), it is used directly.
-- Otherwise: `opencode_mcp_<SERVER>_<HEADER>` (uppercase, non-alphanumerics become `_`).
+- Otherwise: `opencode_mcp_<SERVER>_<HEADER>` (non-alphanumerics become `_`).
 - OAuth client secrets use `opencode_mcp_<SERVER>_OAUTH_CLIENT_SECRET`.
 
 ## Usage
