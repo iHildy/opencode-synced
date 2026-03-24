@@ -55,6 +55,48 @@ describe('stripOverrides', () => {
 
     expect(stripped).toEqual({ theme: 'opencode', other: true });
   });
+
+  it('strips override object keys missing from local config even when present in base', () => {
+    const base = {
+      mcp: { context7: { url: 'https://example.com' } },
+      server: { port: 8080, hostname: '0.0.0.0' },
+    };
+    const overrides = {
+      mcp: { context7: { headers: { apiKey: 'local-key' } } },
+      server: { port: 8080, hostname: '0.0.0.0' },
+    };
+    const local = {
+      mcp: { context7: { url: 'https://example.com', headers: { apiKey: 'local-key' } } },
+    };
+
+    const stripped = stripOverrides(local, overrides, base);
+
+    expect(stripped).not.toHaveProperty('server');
+    expect(stripped).toEqual({
+      mcp: { context7: { url: 'https://example.com' } },
+    });
+  });
+
+  it('strips override scalar keys missing from local config even when present in base', () => {
+    const base = { theme: 'dark', port: 3000 };
+    const overrides = { theme: 'light', port: 8080 };
+    const local = { theme: 'light' };
+
+    const stripped = stripOverrides(local, overrides, base);
+
+    expect(stripped).not.toHaveProperty('port');
+    expect(stripped).toEqual({ theme: 'dark' });
+  });
+
+  it('strips override keys from local when present in local and base', () => {
+    const base = { theme: 'dark', editor: 'vim' };
+    const overrides = { theme: 'light', editor: 'code' };
+    const local = { theme: 'light', editor: 'code', extra: true };
+
+    const stripped = stripOverrides(local, overrides, base);
+
+    expect(stripped).toEqual({ theme: 'dark', editor: 'vim', extra: true });
+  });
 });
 
 describe('normalizeSyncConfig', () => {

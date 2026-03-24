@@ -236,7 +236,7 @@ export function stripOverrides(
       continue;
     }
 
-    if (baseValue === undefined) {
+    if (currentValue === undefined || baseValue === undefined) {
       delete result[key];
     } else {
       result[key] = baseValue;
