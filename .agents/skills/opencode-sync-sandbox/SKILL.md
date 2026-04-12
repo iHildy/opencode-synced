@@ -1,6 +1,6 @@
 ---
 name: opencode-sync-sandbox
-description: Sandbox-first workflow for implementing and validating opencode-synced changes in this repository. Use when you need to plan first, implement a fix, add or update unit/regression tests, and run isolated two-instance GitHub E2E validation without touching global opencode state.
+description: Sandbox-first workflow for implementing and end to end validating opencode-synced changes. Use when making any changes that effect the opencode-synced opencode plugin. Unless specifically directed not to.
 ---
 
 # Opencode Sync Sandbox
