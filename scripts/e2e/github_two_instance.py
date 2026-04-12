@@ -361,7 +361,7 @@ def parse_gh_scopes() -> set[str]:
 
 def preflight(real_home: Path) -> tuple[str, str]:
   print_banner('Preflight')
-  require_commands(['opencode', 'gh', 'git', 'bun', 'python3'])
+  require_commands(['opencode', 'gh', 'git', 'bun', 'python3', 'pgrep'])
   scopes = parse_gh_scopes()
   required_scopes = {'repo', 'delete_repo'}
   missing_scopes = sorted(required_scopes - scopes)

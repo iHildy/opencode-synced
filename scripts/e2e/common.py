@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import random
+import shlex
 import shutil
 import socket
 import string
@@ -38,7 +39,7 @@ def run_cmd(
     timeout=timeout,
   )
   if check and result.returncode != 0:
-    cmd = ' '.join(args)
+    cmd = shlex.join(args)
     raise RuntimeError(
       f'Command failed ({result.returncode}): {cmd}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}'
     )
