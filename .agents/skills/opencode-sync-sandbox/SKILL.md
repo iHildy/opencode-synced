@@ -47,4 +47,4 @@ Use this clone to confirm command/server/tool behavior and avoid assumptions.
 
 For additional usage flags, run:
 
-- `python3 .codex/scripts/e2e/github_two_instance.py --help`
+- `python3 scripts/e2e/github_two_instance.py --help`

@@ -271,10 +271,12 @@ bun -e '
 This repo includes a shared Codex local environment at:
 
 - `.codex/environments/environment.toml`
+- `scripts/setup-env.sh`
+- `scripts/e2e/github_two_instance.py`
 
 ### Setup behavior
 
-When a Codex worktree is created, setup runs:
+The Codex environment just invokes `scripts/setup-env.sh`. Setup does:
 
 - `bun install` (idempotent)
 - creates runtime folders under `.memory/`
@@ -289,22 +291,22 @@ The environment exposes these actions in Codex:
 - `Check` -> `bun run check`
 - `Test` -> `bun test`
 - `Build` -> `bun run build`
-- `E2E GitHub (2 instances)` -> `python3 .codex/scripts/e2e/github_two_instance.py`
+- `E2E GitHub (2 instances)` -> `python3 scripts/e2e/github_two_instance.py`
 
 ### End-to-end test harness
 
 Run manually:
 
 ```bash
-python3 .codex/scripts/e2e/github_two_instance.py
+python3 scripts/e2e/github_two_instance.py
 ```
 
 Helpful options:
 
 ```bash
-python3 .codex/scripts/e2e/github_two_instance.py --help
-python3 .codex/scripts/e2e/github_two_instance.py --preflight-only
-python3 .codex/scripts/e2e/github_two_instance.py --keep-failed-repo
+python3 scripts/e2e/github_two_instance.py --help
+python3 scripts/e2e/github_two_instance.py --preflight-only
+python3 scripts/e2e/github_two_instance.py --keep-failed-repo
 ```
 
 The harness runs two isolated opencode instances, uses a unique ephemeral private GitHub repo,

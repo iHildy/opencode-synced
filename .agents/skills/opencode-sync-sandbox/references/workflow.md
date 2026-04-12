@@ -10,11 +10,11 @@
 ## Useful Flags
 
 ```bash
-python3 .codex/scripts/e2e/github_two_instance.py --help
-python3 .codex/scripts/e2e/github_two_instance.py --owner <owner>
-python3 .codex/scripts/e2e/github_two_instance.py --repo-prefix opencode-sync-e2e
-python3 .codex/scripts/e2e/github_two_instance.py --model opencode/gpt-5-nano
-python3 .codex/scripts/e2e/github_two_instance.py --keep-failed-repo
+python3 scripts/e2e/github_two_instance.py --help
+python3 scripts/e2e/github_two_instance.py --owner <owner>
+python3 scripts/e2e/github_two_instance.py --repo-prefix opencode-sync-e2e
+python3 scripts/e2e/github_two_instance.py --model opencode/gpt-5-nano
+python3 scripts/e2e/github_two_instance.py --keep-failed-repo
 ```
 
 ## Artifacts

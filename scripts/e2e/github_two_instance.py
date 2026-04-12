@@ -6,6 +6,8 @@ import base64
 import fcntl
 import json
 import os
+import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -30,10 +32,36 @@ from common import (
 )
 
 
+PERMISSION_CONFIG = {
+  '*': 'deny',
+  'opencode_sync': 'allow',
+  'read': 'allow',
+  'list': 'allow',
+  'glob': 'allow',
+  'grep': 'allow',
+}
+
+SESSION_PERMISSION_RULES: list[dict[str, str]] = [
+  {'permission': '*', 'pattern': '*', 'action': 'deny'},
+  {'permission': 'opencode_sync', 'pattern': '*', 'action': 'allow'},
+  {'permission': 'read', 'pattern': '*', 'action': 'allow'},
+  {'permission': 'list', 'pattern': '*', 'action': 'allow'},
+  {'permission': 'glob', 'pattern': '*', 'action': 'allow'},
+  {'permission': 'grep', 'pattern': '*', 'action': 'allow'},
+]
+
+
+@dataclass(frozen=True)
+class GitStateSnapshot:
+  branch: str
+  head: str
+  status_lines: tuple[str, ...]
+
+
 @dataclass
 class ServerInstance:
   name: str
-  repo_root: Path
+  serve_root: Path
   sandbox_root: Path
   port: int
   plugin_spec: str
@@ -43,6 +71,7 @@ class ServerInstance:
   real_xdg_data: Path
 
   process: subprocess.Popen[str] | None = None
+  process_group_id: int | None = None
   log_path: Path | None = None
   _reader_thread: threading.Thread | None = None
   _ready_event: threading.Event = threading.Event()
@@ -102,7 +131,7 @@ class ServerInstance:
       '$schema': 'https://opencode.ai/config.json',
       'model': self.model,
       'small_model': self.model,
-      'permission': 'allow',
+      'permission': PERMISSION_CONFIG,
       'plugin': [self.plugin_spec],
     }
     write_json(self.opencode_config_root / 'opencode.json', config_payload)
@@ -137,13 +166,15 @@ class ServerInstance:
 
     self.process = subprocess.Popen(
       command,
-      cwd=str(self.repo_root),
+      cwd=str(self.serve_root),
       env=env,
       stdout=subprocess.PIPE,
       stderr=subprocess.STDOUT,
       text=True,
       bufsize=1,
+      start_new_session=True,
     )
+    self.process_group_id = self.process.pid
 
     self._reader_thread = threading.Thread(target=self._read_logs, daemon=True)
     self._reader_thread.start()
@@ -185,13 +216,57 @@ class ServerInstance:
     if not self.process:
       return
 
+    # Kill the entire server process group. opencode serve may daemonize/re-parent child
+    # processes, and killing only the original parent PID can leak high-CPU orphans.
+    if self.process_group_id is not None:
+      try:
+        os.killpg(self.process_group_id, signal.SIGTERM)
+      except ProcessLookupError:
+        pass
+      except PermissionError:
+        pass
+
     if self.process.poll() is None:
-      self.process.terminate()
       try:
         self.process.wait(timeout=5)
       except subprocess.TimeoutExpired:
-        self.process.kill()
-        self.process.wait(timeout=5)
+        if self.process_group_id is not None:
+          try:
+            os.killpg(self.process_group_id, signal.SIGKILL)
+          except ProcessLookupError:
+            pass
+          except PermissionError:
+            pass
+        try:
+          self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+          pass
+
+    # Fallback cleanup by exact server port in case any process escaped process-group control.
+    escaped = run_cmd(
+      [
+        'pgrep',
+        '-f',
+        f'opencode serve --hostname 127.0.0.1 --port {self.port} --print-logs',
+      ],
+      check=False,
+    )
+    if escaped.returncode == 0 and escaped.stdout.strip():
+      for raw in escaped.stdout.splitlines():
+        pid_text = raw.strip()
+        if not pid_text:
+          continue
+        try:
+          pid = int(pid_text)
+        except ValueError:
+          continue
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+          try:
+            os.kill(pid, sig)
+          except ProcessLookupError:
+            break
+          except PermissionError:
+            break
 
     if self._reader_thread and self._reader_thread.is_alive():
       self._reader_thread.join(timeout=2)
@@ -225,6 +300,9 @@ class ApiClient:
 
   def post_json(self, path: str, payload: dict[str, Any], timeout_sec: int = 300) -> Any:
     return self._request('POST', path, payload, timeout_sec)
+
+  def patch_json(self, path: str, payload: dict[str, Any], timeout_sec: int = 120) -> Any:
+    return self._request('PATCH', path, payload, timeout_sec)
 
 
 class E2EFailure(RuntimeError):
@@ -283,7 +361,7 @@ def parse_gh_scopes() -> set[str]:
 
 def preflight(real_home: Path) -> tuple[str, str]:
   print_banner('Preflight')
-  require_commands(['opencode', 'gh', 'git', 'bun', 'npm', 'python3'])
+  require_commands(['opencode', 'gh', 'git', 'bun', 'python3'])
   scopes = parse_gh_scopes()
   required_scopes = {'repo', 'delete_repo'}
   missing_scopes = sorted(required_scopes - scopes)
@@ -315,6 +393,31 @@ def preflight(real_home: Path) -> tuple[str, str]:
   return gh_token, owner
 
 
+def capture_git_state(repo_root: Path) -> GitStateSnapshot:
+  branch = run_cmd(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd=repo_root).stdout.strip() or 'HEAD'
+  head = run_cmd(['git', 'rev-parse', 'HEAD'], cwd=repo_root).stdout.strip()
+  status_raw = run_cmd(['git', 'status', '--porcelain'], cwd=repo_root).stdout
+  status_lines = tuple(line.rstrip() for line in status_raw.splitlines() if line.strip())
+  return GitStateSnapshot(branch=branch, head=head, status_lines=status_lines)
+
+
+def assert_git_state_unchanged(repo_root: Path, baseline: GitStateSnapshot, stage: str) -> None:
+  current = capture_git_state(repo_root)
+  if current == baseline:
+    return
+
+  expected_status = '\n'.join(baseline.status_lines) if baseline.status_lines else '(clean)'
+  current_status = '\n'.join(current.status_lines) if current.status_lines else '(clean)'
+  raise E2EFailure(
+    'Active dev tree changed unexpectedly during E2E guard check.\n'
+    f'Stage: {stage}\n'
+    f'Expected branch/head: {baseline.branch} {baseline.head}\n'
+    f'Current branch/head: {current.branch} {current.head}\n'
+    f'Expected status:\n{expected_status}\n'
+    f'Current status:\n{current_status}'
+  )
+
+
 def package_plugin(repo_root: Path, run_root: Path) -> Path:
   print_banner('Build + Pack Plugin')
   lock_path = repo_root / '.memory' / 'e2e' / 'build-pack.lock'
@@ -323,14 +426,15 @@ def package_plugin(repo_root: Path, run_root: Path) -> Path:
     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
     run_cmd(['bun', 'run', 'build'], cwd=repo_root)
     pack_result = run_cmd(
-      ['npm', 'pack', '--silent', '--pack-destination', str(run_root)],
+      ['bun', 'pm', 'pack', '--quiet', '--ignore-scripts', '--destination', str(run_root)],
       cwd=repo_root,
       check=False,
     )
     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
   if pack_result.returncode != 0:
     raise RuntimeError(
-      f'npm pack failed with --pack-destination:\n{pack_result.stdout}\n{pack_result.stderr}'
+      f'bun pm pack failed:\nstdout:\n{pack_result.stdout}\nstderr:\n{pack_result.stderr}'
     )
 
   tarball_name = ''
@@ -339,9 +443,10 @@ def package_plugin(repo_root: Path, run_root: Path) -> Path:
     if cleaned:
       tarball_name = cleaned
   if not tarball_name:
-    raise RuntimeError(f'Unable to determine tarball from npm pack output: {pack_result.stdout}')
+    raise RuntimeError(f'Unable to determine tarball from bun pm pack output: {pack_result.stdout}')
 
-  tarball_path = run_root / tarball_name
+  maybe_path = Path(tarball_name)
+  tarball_path = maybe_path if maybe_path.is_absolute() else (run_root / maybe_path.name)
   if not tarball_path.exists():
     raise RuntimeError(f'Packed tarball not found at {tarball_path}')
 
@@ -349,25 +454,37 @@ def package_plugin(repo_root: Path, run_root: Path) -> Path:
   return tarball_path
 
 
-def create_ephemeral_repo(owner: str, prefix: str, repo_root: Path) -> str:
-  print_banner('Create Ephemeral Repo')
+def prepare_source_sandbox(repo_root: Path, run_root: Path) -> Path:
+  print_banner('Prepare Disposable Source Sandbox')
+  source_root = run_root / 'source-sandbox'
+  if source_root.exists():
+    shutil.rmtree(source_root)
+
+  ignore = shutil.ignore_patterns(
+    '.git',
+    '.memory',
+    'node_modules',
+    'dist',
+    'coverage',
+    '.bun',
+    '__pycache__',
+    '.DS_Store',
+  )
+  shutil.copytree(repo_root, source_root, symlinks=True, ignore=ignore)
+  log(f'Prepared disposable source sandbox: {source_root}')
+  return source_root
+
+
+def build_ephemeral_repo_name(prefix: str, repo_root: Path) -> str:
   worktree_hash = short_worktree_hash(repo_root)
   timestamp = int(time.time())
   candidate = f'{prefix}-{worktree_hash}-{timestamp}-{random_suffix(4)}'.lower()
-  candidate = candidate.replace('_', '-')[:95]
-  full_repo = f'{owner}/{candidate}'
+  return candidate.replace('_', '-')[:95]
 
-  create = run_cmd(
-    ['gh', 'repo', 'create', full_repo, '--private', '--disable-issues', '--disable-wiki'],
-    check=False,
-  )
-  if create.returncode != 0:
-    raise RuntimeError(
-      f'Failed creating ephemeral repo {full_repo}:\n{create.stdout}\n{create.stderr}'
-    )
 
-  log(f'Created ephemeral repo: {full_repo}')
-  return full_repo
+def repo_exists(full_repo: str) -> bool:
+  view = run_cmd(['gh', 'repo', 'view', full_repo, '--json', 'name'], check=False)
+  return view.returncode == 0
 
 
 def delete_repo(full_repo: str) -> None:
@@ -396,7 +513,13 @@ def create_session(client: ApiClient) -> str:
   payload = client.post_json('/session', {}, timeout_sec=40)
   if not isinstance(payload, dict) or 'id' not in payload:
     raise RuntimeError(f'Unexpected /session response: {payload}')
-  return str(payload['id'])
+  session_id = str(payload['id'])
+  client.patch_json(
+    f'/session/{urllib.parse.quote(session_id)}',
+    {'permission': SESSION_PERMISSION_RULES},
+    timeout_sec=40,
+  )
+  return session_id
 
 
 def run_command(client: ApiClient, session_id: str, command: str, arguments: str, timeout_sec: int) -> dict[str, Any]:
@@ -448,24 +571,6 @@ def append_sentinel(path: Path, sentinel: str) -> None:
   path.write_text(updated, encoding='utf-8')
 
 
-def write_sync_config(instance: ServerInstance, owner: str, repo_name: str, branch: str) -> None:
-  payload = {
-    'repo': {
-      'owner': owner,
-      'name': repo_name,
-      'branch': branch,
-    },
-    'includeSecrets': False,
-    'includeMcpSecrets': False,
-    'includeSessions': False,
-    'includePromptStash': False,
-    'includeModelFavorites': False,
-    'extraSecretPaths': [],
-    'extraConfigPaths': [],
-  }
-  write_json(instance.opencode_config_root / 'opencode-synced.jsonc', payload)
-
-
 def get_default_branch(full_repo: str) -> str:
   endpoint = f'repos/{full_repo}'
   response = run_cmd(['gh', 'api', endpoint, '--jq', '.default_branch'])
@@ -501,22 +606,35 @@ def wait_for_remote_sentinel(full_repo: str, branch: str, sentinel: str, timeout
   raise RuntimeError(f'Sentinel not found in remote repo within timeout: {sentinel}')
 
 
-def wait_for_local_sentinel(path: Path, sentinel: str, timeout_sec: int) -> None:
-  deadline = time.time() + timeout_sec
-  while time.time() < deadline:
-    if path.exists():
-      content = path.read_text(encoding='utf-8', errors='replace')
-      if sentinel in content:
-        return
-    time.sleep(1)
-  raise RuntimeError(f'Sentinel not found in local file within timeout: {path}')
-
-
 def file_contains(path: Path, needle: str) -> bool:
   if not path.exists():
     return False
   content = path.read_text(encoding='utf-8', errors='replace')
   return needle in content
+
+
+def run_and_validate_command(
+  *,
+  client: ApiClient,
+  session_id: str,
+  command: str,
+  arguments: str,
+  timeout_sec: int,
+  result_path: Path,
+  active_repo_root: Path,
+  baseline_state: GitStateSnapshot,
+  label: str,
+) -> dict[str, Any]:
+  assert_git_state_unchanged(active_repo_root, baseline_state, f'before {label}')
+  payload = run_command(client, session_id, command, arguments, timeout_sec=timeout_sec)
+  write_json(result_path, payload)
+
+  error = response_error(payload)
+  if error:
+    raise E2EFailure(f'{label} failed: {error}')
+
+  assert_git_state_unchanged(active_repo_root, baseline_state, f'after {label}')
+  return payload
 
 
 def run_pull_until_repo_sentinel(
@@ -528,6 +646,8 @@ def run_pull_until_repo_sentinel(
   timeout_sec: int,
   results_dir: Path,
   result_prefix: str,
+  active_repo_root: Path,
+  baseline_state: GitStateSnapshot,
 ) -> dict[str, Any]:
   deadline = time.time() + timeout_sec
   attempt = 1
@@ -535,9 +655,11 @@ def run_pull_until_repo_sentinel(
 
   while time.time() < deadline:
     remaining = max(30, min(120, int(deadline - time.time())))
+    assert_git_state_unchanged(active_repo_root, baseline_state, f'before {result_prefix} attempt {attempt}')
     payload = run_command(client, session_id, 'sync-pull', '', timeout_sec=remaining)
     write_json(results_dir / f'{result_prefix}-attempt-{attempt}.json', payload)
     last_payload = payload
+    assert_git_state_unchanged(active_repo_root, baseline_state, f'after {result_prefix} attempt {attempt}')
 
     pull_error = response_error(payload)
     if pull_error:
@@ -582,18 +704,26 @@ def run_e2e(args: argparse.Namespace) -> int:
 
   log(f'Run directory: {run_root}')
 
+  baseline_state = capture_git_state(repo_root)
+
+  assert_git_state_unchanged(repo_root, baseline_state, 'before packaging')
   tarball = package_plugin(repo_root, run_root)
+  assert_git_state_unchanged(repo_root, baseline_state, 'after packaging')
+
+  source_root = prepare_source_sandbox(repo_root, run_root)
   plugin_spec = f'opencode-synced@file:{tarball}'
 
-  full_repo = create_ephemeral_repo(owner, args.repo_prefix, repo_root)
-  should_delete_repo = True
+  repo_name = build_ephemeral_repo_name(args.repo_prefix, repo_root)
+  full_repo = f'{owner}/{repo_name}'
 
   branch = 'main'
   successful = False
+  exit_code = 1
+  should_delete_repo = True
 
   machine_a = ServerInstance(
     name='machine-a',
-    repo_root=repo_root,
+    serve_root=source_root,
     sandbox_root=run_root / 'machine-a',
     port=find_free_port(),
     plugin_spec=plugin_spec,
@@ -604,7 +734,7 @@ def run_e2e(args: argparse.Namespace) -> int:
   )
   machine_b = ServerInstance(
     name='machine-b',
-    repo_root=repo_root,
+    serve_root=source_root,
     sandbox_root=run_root / 'machine-b',
     port=find_free_port(),
     plugin_spec=plugin_spec,
@@ -622,6 +752,11 @@ def run_e2e(args: argparse.Namespace) -> int:
     'ports': {
       'machine_a': machine_a.port,
       'machine_b': machine_b.port,
+    },
+    'active_tree': {
+      'branch': baseline_state.branch,
+      'head': baseline_state.head,
+      'status_count': len(baseline_state.status_lines),
     },
     'status': 'running',
   }
@@ -648,10 +783,23 @@ def run_e2e(args: argparse.Namespace) -> int:
     log(f'machine-a session: {session_a}')
     log(f'machine-b session: {session_b}')
 
+    print_banner('sync-init on machine A')
+    run_and_validate_command(
+      client=client_a,
+      session_id=session_a,
+      command='sync-init',
+      arguments=full_repo,
+      timeout_sec=args.timeout_sec,
+      result_path=results_dir / 'machine-a-sync-init.json',
+      active_repo_root=repo_root,
+      baseline_state=baseline_state,
+      label='sync-init on machine A',
+    )
+
+    if not repo_exists(full_repo):
+      raise E2EFailure(f'sync-init completed but repo was not created: {full_repo}')
+
     branch = get_default_branch(full_repo)
-    repo_name = full_repo.split('/', 1)[1]
-    write_sync_config(machine_a, owner, repo_name, branch)
-    write_sync_config(machine_b, owner, repo_name, branch)
 
     sentinel1 = f'opencode-sync-e2e sentinel 1 ({run_id})'
     sentinel2 = f'opencode-sync-e2e sentinel 2 ({run_id})'
@@ -660,41 +808,73 @@ def run_e2e(args: argparse.Namespace) -> int:
     agents_a = machine_a.opencode_config_root / 'AGENTS.md'
     append_sentinel(agents_a, sentinel1)
 
-    push1_payload = run_command(client_a, session_a, 'sync-push', '', timeout_sec=args.timeout_sec)
-    write_json(results_dir / 'machine-a-sync-push-1.json', push1_payload)
-    push1_error = response_error(push1_payload)
-    if push1_error:
-      raise E2EFailure(f'sync-push #1 failed: {push1_error}')
+    run_and_validate_command(
+      client=client_a,
+      session_id=session_a,
+      command='sync-push',
+      arguments='',
+      timeout_sec=args.timeout_sec,
+      result_path=results_dir / 'machine-a-sync-push-1.json',
+      active_repo_root=repo_root,
+      baseline_state=baseline_state,
+      label='sync-push #1 on machine A',
+    )
 
     wait_for_remote_sentinel(full_repo, branch, sentinel1, timeout_sec=args.timeout_sec)
 
-    print_banner('sync-pull sentinel 1 on machine B')
+    print_banner('sync-link on machine B')
+    run_and_validate_command(
+      client=client_b,
+      session_id=session_b,
+      command='sync-link',
+      arguments=repo_name,
+      timeout_sec=args.timeout_sec,
+      result_path=results_dir / 'machine-b-sync-link.json',
+      active_repo_root=repo_root,
+      baseline_state=baseline_state,
+      label='sync-link on machine B',
+    )
+
+    machine_b_sync_config = machine_b.opencode_config_root / 'opencode-synced.jsonc'
+    if not machine_b_sync_config.exists():
+      raise E2EFailure(f'sync-link did not produce expected config file: {machine_b_sync_config}')
+    if not file_contains(machine_b_sync_config, f'\"name\": \"{repo_name}\"'):
+      preview = machine_b_sync_config.read_text(encoding='utf-8', errors='replace')
+      raise E2EFailure(
+        'sync-link bound machine B to an unexpected repo.\n'
+        f'Expected repo name: {repo_name}\n'
+        f'Config path: {machine_b_sync_config}\n'
+        f'Config contents:\n{preview}'
+      )
+
     agents_b = machine_b.opencode_config_root / 'AGENTS.md'
     machine_b_repo_agents = (
       machine_b.xdg_data_home / 'opencode' / 'opencode-synced' / 'repo' / 'config' / 'AGENTS.md'
     )
-    run_pull_until_repo_sentinel(
-      client=client_b,
-      session_id=session_b,
-      sentinel=sentinel1,
-      repo_agents_path=machine_b_repo_agents,
-      timeout_sec=args.timeout_sec,
-      results_dir=results_dir,
-      result_prefix='machine-b-sync-pull-1',
-    )
+    if not file_contains(machine_b_repo_agents, sentinel1):
+      raise E2EFailure(
+        'sync-link did not materialize sentinel1 in machine-b repo clone '
+        f'({machine_b_repo_agents}).'
+      )
     if not file_contains(agents_b, sentinel1):
       log(
-        'WARNING: machine-b local AGENTS.md did not include sentinel1 after sync-pull #1; '
+        'WARNING: machine-b local AGENTS.md did not include sentinel1 after sync-link; '
         'local sync repo contains sentinel1 and replication is confirmed.'
       )
 
     print_banner('sync-push sentinel 2 from machine A')
     append_sentinel(agents_a, sentinel2)
-    push2_payload = run_command(client_a, session_a, 'sync-push', '', timeout_sec=args.timeout_sec)
-    write_json(results_dir / 'machine-a-sync-push-2.json', push2_payload)
-    push2_error = response_error(push2_payload)
-    if push2_error:
-      raise E2EFailure(f'sync-push #2 failed: {push2_error}')
+    run_and_validate_command(
+      client=client_a,
+      session_id=session_a,
+      command='sync-push',
+      arguments='',
+      timeout_sec=args.timeout_sec,
+      result_path=results_dir / 'machine-a-sync-push-2.json',
+      active_repo_root=repo_root,
+      baseline_state=baseline_state,
+      label='sync-push #2 on machine A',
+    )
 
     wait_for_remote_sentinel(full_repo, branch, sentinel2, timeout_sec=args.timeout_sec)
 
@@ -707,6 +887,8 @@ def run_e2e(args: argparse.Namespace) -> int:
       timeout_sec=args.timeout_sec,
       results_dir=results_dir,
       result_prefix='machine-b-sync-pull-2',
+      active_repo_root=repo_root,
+      baseline_state=baseline_state,
     )
     if not file_contains(agents_b, sentinel2):
       log(
@@ -714,28 +896,39 @@ def run_e2e(args: argparse.Namespace) -> int:
         'local sync repo contains sentinel2 and replication is confirmed.'
       )
 
+    assert_git_state_unchanged(repo_root, baseline_state, 'after E2E flow')
+
     summary['status'] = 'passed'
     successful = True
-    log('E2E passed. Sentinel propagated across both instances.')
-    return 0
+    exit_code = 0
+    log('E2E passed. Sentinel propagated across both instances with active tree unchanged.')
 
   except Exception as error:
     summary['status'] = 'failed'
     summary['error'] = str(error)
     log(f'E2E failed: {error}')
-    return 1
+    exit_code = 1
 
   finally:
+    machine_a.stop()
+    machine_b.stop()
+
     summary['logs'] = {
       'machine_a': str(machine_a.log_path) if machine_a.log_path else None,
       'machine_b': str(machine_b.log_path) if machine_b.log_path else None,
     }
-    write_json(results_dir / 'summary.json', summary)
 
-    machine_a.stop()
-    machine_b.stop()
+    try:
+      assert_git_state_unchanged(repo_root, baseline_state, 'final teardown')
+    except Exception as guard_error:
+      summary['status'] = 'failed'
+      summary['guard_error'] = str(guard_error)
+      log(f'FINAL GUARD FAILURE: {guard_error}')
+      exit_code = 1
 
-    if should_delete_repo:
+    repo_present = repo_exists(full_repo)
+    summary['repo_present_at_teardown'] = repo_present
+    if should_delete_repo and repo_present:
       if successful:
         delete_repo(full_repo)
       elif args.keep_failed_repo:
@@ -743,7 +936,10 @@ def run_e2e(args: argparse.Namespace) -> int:
       else:
         delete_repo(full_repo)
 
+    write_json(results_dir / 'summary.json', summary)
     log(f'Run artifacts: {run_root}')
+
+  return exit_code
 
 
 def main() -> int:

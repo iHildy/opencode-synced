@@ -2,13 +2,15 @@
 description: Initialize opencode-synced configuration
 ---
 
-Use the opencode_sync tool with command "init".
-The repo will be created automatically if it doesn't exist (private by default).
-Default repo name is "my-opencode-config" with owner auto-detected from GitHub CLI.
-If the user wants a custom repo name, pass name="custom-name".
-If the user wants an org-owned repo, pass owner="org-name".
-If the user wants a public repo, pass private=false.
-Include includeSecrets if the user explicitly opts in.
-Include includeMcpSecrets only if they want MCP secrets committed to a private repo.
-If the user supplies extra config paths, pass extraConfigPaths.
-Model favorites sync is enabled by default; set includeModelFavorites=false to disable.
+You MUST call the `opencode_sync` tool with `command=\"init\"`.
+Do not answer with plain text only.
+
+Argument handling:
+- If `$ARGUMENTS` is non-empty, pass `repo=\"$ARGUMENTS\"`.
+- If `$ARGUMENTS` is empty, let the tool choose defaults.
+
+Rules:
+- Keep repo private unless the user explicitly asked for public.
+- Include `includeSecrets` only if explicitly requested.
+- Include `includeMcpSecrets` only if explicitly requested and secrets are enabled.
+- Include `extraConfigPaths` only if explicitly provided.

@@ -2,14 +2,13 @@
 description: Link this computer to an existing sync repo
 ---
 
-Use the opencode_sync tool with command "link".
-This command is for linking a second (or additional) computer to an existing sync repo that was created on another machine.
+You MUST call the `opencode_sync` tool with `command=\"link\"`.
+Do not answer with plain text only.
 
-IMPORTANT: This will OVERWRITE the local opencode configuration with the contents from the synced repo. The only thing preserved is the local overrides file (opencode-synced.overrides.jsonc).
+Argument handling:
+- If `$ARGUMENTS` is non-empty, pass `repo=\"$ARGUMENTS\"`.
+- If `$ARGUMENTS` is empty, let the tool auto-discover.
 
-If the user provides a repo name argument, pass it as name="repo-name".
-If no repo name is provided, the tool will automatically search for common sync repo names.
-
-After linking:
-- Remind the user to restart opencode to apply the synced config
-- If they want to enable secrets sync, they should run /sync-enable-secrets
+Reminder:
+- Linking overwrites local config except local overrides.
+- After linking, remind to restart opencode.

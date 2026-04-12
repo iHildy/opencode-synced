@@ -7,4 +7,4 @@ if git_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
 fi
 
 cd "${REPO_ROOT}"
-python3 .codex/scripts/e2e/github_two_instance.py --preflight-only "$@"
+python3 scripts/e2e/github_two_instance.py --preflight-only "$@"
