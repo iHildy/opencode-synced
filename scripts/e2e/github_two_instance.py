@@ -6,7 +6,6 @@ import base64
 import fcntl
 import json
 import os
-import re
 import shutil
 import signal
 import sqlite3
@@ -751,8 +750,43 @@ def parse_jsonc(content: str) -> dict[str, Any]:
     index += 1
 
   cleaned = ''.join(output_chars)
-  # Remove trailing commas before object/array close.
-  cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+  # Remove trailing commas before object/array close outside string values.
+  without_trailing_commas: list[str] = []
+  in_cleaned_string = False
+  escape_in_cleaned_string = False
+  cleaned_index = 0
+  cleaned_length = len(cleaned)
+  while cleaned_index < cleaned_length:
+    current = cleaned[cleaned_index]
+    if in_cleaned_string:
+      without_trailing_commas.append(current)
+      if escape_in_cleaned_string:
+        escape_in_cleaned_string = False
+      elif current == '\\':
+        escape_in_cleaned_string = True
+      elif current == '"':
+        in_cleaned_string = False
+      cleaned_index += 1
+      continue
+
+    if current == '"':
+      in_cleaned_string = True
+      without_trailing_commas.append(current)
+      cleaned_index += 1
+      continue
+
+    if current == ',':
+      next_token_index = cleaned_index + 1
+      while next_token_index < cleaned_length and cleaned[next_token_index].isspace():
+        next_token_index += 1
+      if next_token_index < cleaned_length and cleaned[next_token_index] in ('}', ']'):
+        cleaned_index += 1
+        continue
+
+    without_trailing_commas.append(current)
+    cleaned_index += 1
+
+  cleaned = ''.join(without_trailing_commas)
   parsed = json.loads(cleaned)
   if not isinstance(parsed, dict):
     raise RuntimeError('Expected root object in JSONC config.')
