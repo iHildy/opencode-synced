@@ -24,12 +24,39 @@ export interface SecretsBackendConfig {
   documents?: SecretsBackendDocuments;
 }
 
+export type SessionBackendType = 'git' | 'turso';
+
+export interface TursoSessionBackendSettings {
+  database?: string;
+  url?: string;
+  syncIntervalSec?: number;
+  autoSetup?: boolean;
+}
+
+export interface SessionBackendConfig {
+  type?: SessionBackendType;
+  turso?: TursoSessionBackendSettings;
+}
+
+export interface NormalizedTursoSessionBackendSettings {
+  database?: string;
+  url?: string;
+  syncIntervalSec: number;
+  autoSetup: boolean;
+}
+
+export interface NormalizedSessionBackendConfig {
+  type: SessionBackendType;
+  turso: NormalizedTursoSessionBackendSettings;
+}
+
 export interface SyncConfig {
   repo?: SyncRepoConfig;
   localRepoPath?: string;
   includeSecrets?: boolean;
   includeMcpSecrets?: boolean;
   includeSessions?: boolean;
+  sessionBackend?: SessionBackendConfig;
   includePromptStash?: boolean;
   includeModelFavorites?: boolean;
   secretsBackend?: SecretsBackendConfig;
@@ -41,6 +68,7 @@ export interface NormalizedSyncConfig extends SyncConfig {
   includeSecrets: boolean;
   includeMcpSecrets: boolean;
   includeSessions: boolean;
+  sessionBackend: NormalizedSessionBackendConfig;
   includePromptStash: boolean;
   includeModelFavorites: boolean;
   secretsBackend?: SecretsBackendConfig;
@@ -53,6 +81,8 @@ export interface SyncState {
   lastPush?: string;
   lastRemoteUpdate?: string;
   lastSecretsHash?: string;
+  lastSessionPull?: string;
+  lastSessionPush?: string;
 }
 
 export async function pathExists(filePath: string): Promise<boolean> {
@@ -103,6 +133,39 @@ export function normalizeSecretsBackend(
   return { type: '1password', vault, documents };
 }
 
+function normalizeTursoBackendSettings(
+  input: SessionBackendConfig['turso']
+): NormalizedTursoSessionBackendSettings {
+  const syncIntervalRaw = input?.syncIntervalSec;
+  const syncIntervalSec =
+    typeof syncIntervalRaw === 'number' && Number.isFinite(syncIntervalRaw) && syncIntervalRaw > 0
+      ? Math.floor(syncIntervalRaw)
+      : 15;
+
+  return {
+    database: typeof input?.database === 'string' ? input.database : undefined,
+    url: typeof input?.url === 'string' ? input.url : undefined,
+    syncIntervalSec,
+    autoSetup: input?.autoSetup !== false,
+  };
+}
+
+export function normalizeSessionBackend(
+  input: SyncConfig['sessionBackend']
+): NormalizedSessionBackendConfig {
+  const type = input?.type === 'turso' ? 'turso' : 'git';
+  return {
+    type,
+    turso: normalizeTursoBackendSettings(input?.turso),
+  };
+}
+
+export function isTursoSessionBackend(config: SyncConfig | NormalizedSyncConfig): boolean {
+  if (!config.includeSessions) return false;
+  const normalized = normalizeSessionBackend(config.sessionBackend);
+  return normalized.type === 'turso';
+}
+
 export function normalizeSyncConfig(config: SyncConfig): NormalizedSyncConfig {
   const includeSecrets = Boolean(config.includeSecrets);
   const includeModelFavorites = config.includeModelFavorites !== false;
@@ -110,6 +173,7 @@ export function normalizeSyncConfig(config: SyncConfig): NormalizedSyncConfig {
     includeSecrets,
     includeMcpSecrets: includeSecrets ? Boolean(config.includeMcpSecrets) : false,
     includeSessions: Boolean(config.includeSessions),
+    sessionBackend: normalizeSessionBackend(config.sessionBackend),
     includePromptStash: Boolean(config.includePromptStash),
     includeModelFavorites,
     secretsBackend: normalizeSecretsBackend(config.secretsBackend),

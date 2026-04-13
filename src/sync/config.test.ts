@@ -8,7 +8,9 @@ import {
   canCommitMcpSecrets,
   chmodIfExists,
   deepMerge,
+  isTursoSessionBackend,
   normalizeSecretsBackend,
+  normalizeSessionBackend,
   normalizeSyncConfig,
   parseJsonc,
   stripOverrides,
@@ -83,6 +85,72 @@ describe('normalizeSyncConfig', () => {
     const normalized = normalizeSyncConfig({ includeSecrets: true });
     expect(normalized.extraSecretPaths).toEqual([]);
     expect(normalized.extraConfigPaths).toEqual([]);
+  });
+
+  it('defaults session backend to git', () => {
+    const normalized = normalizeSyncConfig({ includeSessions: true });
+    expect(normalized.sessionBackend.type).toBe('git');
+    expect(normalized.sessionBackend.turso.syncIntervalSec).toBe(15);
+    expect(normalized.sessionBackend.turso.autoSetup).toBe(true);
+  });
+
+  it('normalizes turso backend settings', () => {
+    const normalized = normalizeSyncConfig({
+      includeSessions: true,
+      sessionBackend: {
+        type: 'turso',
+        turso: {
+          database: 'my-db',
+          url: 'libsql://my-db.turso.io',
+          syncIntervalSec: 8.7,
+          autoSetup: false,
+        },
+      },
+    });
+
+    expect(normalized.sessionBackend).toEqual({
+      type: 'turso',
+      turso: {
+        database: 'my-db',
+        url: 'libsql://my-db.turso.io',
+        syncIntervalSec: 8,
+        autoSetup: false,
+      },
+    });
+  });
+});
+
+describe('normalizeSessionBackend', () => {
+  it('falls back to git when type is missing or invalid', () => {
+    expect(normalizeSessionBackend(undefined).type).toBe('git');
+    expect(
+      normalizeSessionBackend({
+        type: 'git',
+      }).type
+    ).toBe('git');
+  });
+});
+
+describe('isTursoSessionBackend', () => {
+  it('requires includeSessions and turso type', () => {
+    expect(
+      isTursoSessionBackend({
+        includeSessions: false,
+        sessionBackend: { type: 'turso' },
+      })
+    ).toBe(false);
+    expect(
+      isTursoSessionBackend({
+        includeSessions: true,
+        sessionBackend: { type: 'git' },
+      })
+    ).toBe(false);
+    expect(
+      isTursoSessionBackend({
+        includeSessions: true,
+        sessionBackend: { type: 'turso' },
+      })
+    ).toBe(true);
   });
 });
 

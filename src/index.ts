@@ -128,6 +128,10 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
           'secrets-pull',
           'secrets-push',
           'secrets-status',
+          'sessions-backend',
+          'sessions-setup-turso',
+          'sessions-migrate-turso',
+          'sessions-cleanup-git',
         ])
         .describe('Sync command to execute'),
       repo: tool.schema.string().optional().describe('Repo owner/name or URL'),
@@ -144,6 +148,10 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
         .boolean()
         .optional()
         .describe('Enable session sync (requires includeSecrets)'),
+      sessionBackend: tool.schema
+        .enum(['git', 'turso'])
+        .optional()
+        .describe('Session sync backend when includeSessions=true'),
       includePromptStash: tool.schema
         .boolean()
         .optional()
@@ -157,6 +165,14 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
       extraSecretPaths: tool.schema.array(tool.schema.string()).optional(),
       extraConfigPaths: tool.schema.array(tool.schema.string()).optional(),
       localRepoPath: tool.schema.string().optional().describe('Override local repo path'),
+      setupTurso: tool.schema
+        .boolean()
+        .optional()
+        .describe('Run Turso setup (install/auth/provision) when Turso backend is selected'),
+      migrateSessions: tool.schema
+        .boolean()
+        .optional()
+        .describe('Bootstrap remote Turso sessions from local session DB before switching backend'),
     },
     async execute(args) {
       try {
@@ -173,8 +189,11 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
             includeSecrets: args.includeSecrets,
             includeMcpSecrets: args.includeMcpSecrets,
             includeSessions: args.includeSessions,
+            sessionBackend: args.sessionBackend,
             includePromptStash: args.includePromptStash,
             includeModelFavorites: args.includeModelFavorites,
+            setupTurso: args.setupTurso,
+            migrateSessions: args.migrateSessions,
             create: args.create,
             private: args.private,
             extraSecretPaths: args.extraSecretPaths,
@@ -208,6 +227,26 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
             includeMcpSecrets: args.includeMcpSecrets,
           });
         }
+        if (args.command === 'sessions-backend') {
+          return await service.sessionsBackend({
+            backend: args.sessionBackend,
+            setupTurso: args.setupTurso,
+            migrateSessions: args.migrateSessions,
+          });
+        }
+        if (args.command === 'sessions-setup-turso') {
+          return await service.sessionsSetupTurso({
+            forceTokenRefresh: args.setupTurso,
+          });
+        }
+        if (args.command === 'sessions-migrate-turso') {
+          return await service.sessionsMigrateTurso({
+            setupTurso: args.setupTurso,
+          });
+        }
+        if (args.command === 'sessions-cleanup-git') {
+          return await service.sessionsCleanupGit();
+        }
         if (args.command === 'resolve') {
           return await service.resolve();
         }
@@ -230,6 +269,9 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
   return {
     tool: {
       opencode_sync: syncTool,
+    },
+    async event(input) {
+      await service.handleEvent(input.event);
     },
     async config(config) {
       config.command = config.command ?? {};

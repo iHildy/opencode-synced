@@ -272,16 +272,63 @@ export interface FoundRepo {
   isPrivate: boolean;
 }
 
-export async function findSyncRepo($: Shell, repoName?: string): Promise<FoundRepo | null> {
+export interface FindSyncRepoOptions {
+  disableAutoDiscovery?: boolean;
+}
+
+export interface RepoReference {
+  owner: string;
+  name: string;
+}
+
+export function parseRepoReference(input: string, fallbackOwner: string): RepoReference | null {
+  const raw = input.trim();
+  if (!raw) return null;
+
+  const fromHttpUrl = parseGitHubHttpRepo(raw);
+  if (fromHttpUrl) return fromHttpUrl;
+
+  const fromSshUrl = parseGitHubSshRepo(raw);
+  if (fromSshUrl) return fromSshUrl;
+
+  if (raw.includes('/')) {
+    const parts = raw.split('/').filter(Boolean);
+    if (parts.length !== 2) return null;
+    const [owner, repoRaw] = parts;
+    if (owner.includes(':') || owner.includes('@')) return null;
+    const name = normalizeRepoName(repoRaw);
+    if (!owner || !name) return null;
+    return { owner, name };
+  }
+
+  const name = normalizeRepoName(raw);
+  if (!name || !fallbackOwner) return null;
+  return { owner: fallbackOwner, name };
+}
+
+export async function findSyncRepo(
+  $: Shell,
+  repoName?: string,
+  options: FindSyncRepoOptions = {}
+): Promise<FoundRepo | null> {
   const owner = await getAuthenticatedUser($);
 
   // If user provided a specific name, check that first
   if (repoName) {
-    const exists = await repoExists($, `${owner}/${repoName}`);
-    if (exists) {
-      const isPrivate = await checkRepoPrivate($, `${owner}/${repoName}`);
-      return { owner, name: repoName, isPrivate };
+    const target = parseRepoReference(repoName, owner);
+    if (!target) {
+      return null;
     }
+    const repoIdentifier = `${target.owner}/${target.name}`;
+    const exists = await repoExists($, repoIdentifier);
+    if (exists) {
+      const isPrivate = await checkRepoPrivate($, repoIdentifier);
+      return { owner: target.owner, name: target.name, isPrivate };
+    }
+    return null;
+  }
+
+  if (options.disableAutoDiscovery) {
     return null;
   }
 
@@ -304,4 +351,42 @@ async function checkRepoPrivate($: Shell, repoIdentifier: string): Promise<boole
   } catch {
     return false;
   }
+}
+
+function parseGitHubHttpRepo(raw: string): RepoReference | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:' && parsed.protocol !== 'ssh:') {
+    return null;
+  }
+  if (parsed.hostname !== 'github.com' && parsed.hostname !== 'www.github.com') return null;
+  if (parsed.protocol === 'ssh:' && parsed.username !== 'git') return null;
+
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  if (parts.length !== 2) return null;
+  const [ownerRaw = '', repoRaw = ''] = parts;
+
+  const name = normalizeRepoName(repoRaw);
+  if (!name) return null;
+  return { owner: ownerRaw, name };
+}
+
+function parseGitHubSshRepo(raw: string): RepoReference | null {
+  const match = raw.match(/^git@github\.com:([^/\s]+)\/([^/\s]+)\/?$/i);
+  if (!match) return null;
+  const owner = match[1] ?? '';
+  const name = normalizeRepoName(match[2] ?? '');
+  if (!owner || !name) return null;
+  return { owner, name };
+}
+
+function normalizeRepoName(repoName: string): string {
+  const trimmed = repoName.trim();
+  if (!trimmed) return '';
+  return trimmed.replace(/\.git$/i, '');
 }

@@ -131,6 +131,31 @@ describe('buildSyncPlan', () => {
     }
   });
 
+  it('excludes git session paths when using turso session backend', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: true,
+      includeSessions: true,
+      sessionBackend: {
+        type: 'turso',
+      },
+    };
+
+    const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
+    const sessionItems = plan.items.filter(
+      (item) =>
+        item.localPath.endsWith('/.local/share/opencode/opencode.db') ||
+        item.localPath.includes('/.local/share/opencode/storage/session') ||
+        item.localPath.includes('/.local/share/opencode/storage/message') ||
+        item.localPath.includes('/.local/share/opencode/storage/part') ||
+        item.localPath.includes('/.local/share/opencode/storage/session_diff')
+    );
+
+    expect(sessionItems).toEqual([]);
+  });
+
   it('excludes auth files when using 1password backend', () => {
     const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');

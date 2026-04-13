@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import type { NormalizedSyncConfig, SyncConfig } from './config.js';
-import { hasSecretsBackend } from './config.js';
+import { hasSecretsBackend, isTursoSessionBackend } from './config.js';
 
 export interface XdgPaths {
   homeDir: string;
@@ -246,7 +246,7 @@ export function buildSyncPlan(
       );
     }
 
-    if (config.includeSessions) {
+    if (config.includeSessions && !isTursoSessionBackend(config)) {
       items.push({
         localPath: path.join(dataRoot, SESSION_DB_FILE),
         repoPath: path.join(repoDataRoot, SESSION_DB_FILE),
