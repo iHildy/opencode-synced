@@ -43,6 +43,7 @@ export interface SyncPlan {
   repoRoot: string;
   homeDir: string;
   platform: NodeJS.Platform;
+  configRoot: string;
 }
 
 const DEFAULT_CONFIG_NAME = 'opencode.json';
@@ -340,6 +341,7 @@ export function buildSyncPlan(
     repoRoot,
     homeDir: locations.xdg.homeDir,
     platform,
+    configRoot: locations.configRoot,
   };
 }
 
@@ -364,4 +366,55 @@ function buildExtraPathPlan(
     manifestPath,
     entries,
   };
+}
+
+/**
+ * Convert an absolute sourcePath to a portable form for the manifest.
+ * If the path is inside configRoot, store it as a relative path (e.g. "tui.json").
+ * If outside configRoot, store it with ~/ prefix (e.g. "~/.ssh/id_rsa").
+ * This makes the manifest portable across different machines and platforms.
+ */
+export function toPortablePath(absolutePath: string, configRoot: string, homeDir: string): string {
+  // Check if path is inside configRoot
+  const rel = path.relative(configRoot, absolutePath);
+  if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+    return rel;
+  }
+
+  // Check if path is inside homeDir — store with ~/ prefix
+  if (homeDir && absolutePath.startsWith(homeDir + path.sep)) {
+    return '~/' + absolutePath.slice(homeDir.length + 1);
+  }
+  if (homeDir && absolutePath === homeDir) {
+    return '~';
+  }
+
+  // Outside both — keep absolute (last resort)
+  return absolutePath;
+}
+
+/**
+ * Resolve a portable sourcePath from the manifest back to a local absolute path.
+ * Relative paths are resolved against configRoot.
+ * ~/ paths are expanded via the local homeDir.
+ * Absolute paths are kept as-is (backwards compat).
+ */
+export function fromPortablePath(
+  portablePath: string,
+  configRoot: string,
+  homeDir: string
+): string {
+  if (!portablePath) return portablePath;
+
+  // ~/ expansion
+  if (portablePath === '~') return homeDir;
+  if (portablePath.startsWith('~/')) return path.join(homeDir, portablePath.slice(2));
+
+  // Relative path — resolve against configRoot
+  if (!path.isAbsolute(portablePath)) {
+    return path.resolve(configRoot, portablePath);
+  }
+
+  // Absolute — already resolved
+  return portablePath;
 }

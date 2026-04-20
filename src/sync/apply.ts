@@ -17,7 +17,7 @@ import {
   stripOverrideKeys,
 } from './mcp-secrets.js';
 import type { ExtraPathPlan, SyncItem, SyncPlan } from './paths.js';
-import { normalizePath } from './paths.js';
+import { fromPortablePath, normalizePath, toPortablePath } from './paths.js';
 
 type ExtraPathType = 'file' | 'dir';
 
@@ -284,14 +284,15 @@ async function applyExtraPaths(plan: SyncPlan, extra: ExtraPathPlan): Promise<vo
   const manifest = parseJsonc<ExtraPathManifest>(manifestContent);
 
   for (const entry of manifest.entries) {
-    const normalized = normalizePath(entry.sourcePath, plan.homeDir, plan.platform);
+    // Resolve the portable sourcePath from the manifest against local paths
+    const localPath = fromPortablePath(entry.sourcePath, plan.configRoot, plan.homeDir);
+    const normalized = normalizePath(localPath, plan.homeDir, plan.platform);
     const isAllowed = allowlist.includes(normalized);
     if (!isAllowed) continue;
 
     const repoPath = path.isAbsolute(entry.repoPath)
       ? entry.repoPath
       : path.join(plan.repoRoot, entry.repoPath);
-    const localPath = entry.sourcePath;
     const entryType: ExtraPathType = entry.type ?? 'file';
 
     if (!(await pathExists(repoPath))) continue;
@@ -320,11 +321,12 @@ async function writeExtraPathManifest(plan: SyncPlan, extra: ExtraPathPlan): Pro
       continue;
     }
     const stat = await fs.stat(sourcePath);
+    const portableSourcePath = toPortablePath(sourcePath, plan.configRoot, plan.homeDir);
     if (stat.isDirectory()) {
       await copyDirRecursive(sourcePath, entry.repoPath);
       const items = await collectExtraPathItems(sourcePath, sourcePath);
       entries.push({
-        sourcePath,
+        sourcePath: portableSourcePath,
         repoPath: path.relative(plan.repoRoot, entry.repoPath),
         type: 'dir',
         mode: stat.mode & 0o777,
@@ -335,7 +337,7 @@ async function writeExtraPathManifest(plan: SyncPlan, extra: ExtraPathPlan): Pro
     if (stat.isFile()) {
       await copyFileWithMode(sourcePath, entry.repoPath);
       entries.push({
-        sourcePath,
+        sourcePath: portableSourcePath,
         repoPath: path.relative(plan.repoRoot, entry.repoPath),
         type: 'file',
         mode: stat.mode & 0o777,

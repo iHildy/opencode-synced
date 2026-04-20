@@ -25,6 +25,7 @@ function createPlan(repoRoot: string, homeDir: string, items: SyncItem[]): SyncP
     repoRoot,
     homeDir,
     platform: 'linux',
+    configRoot: path.join(homeDir, '.config', 'opencode'),
   };
 }
 
