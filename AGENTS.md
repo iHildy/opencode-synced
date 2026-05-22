@@ -1,5 +1,8 @@
 # AGENTS.md
 
+## Language
+- Все ответы пользователю — ТОЛЬКО на русском языке. Никогда не использовать английский.
+
 ## Build & Test Commands (Windows / Node.js)
 
 - **Build**: `npx tsc -p tsconfig.build.json && copyfiles -u 1 "src/command/**/*" dist/`

@@ -186,8 +186,10 @@ function deleteSession(db: DatabaseSync, id: string): void {
 
 function asSQLValue(val: unknown): string | number | null {
   if (val === null || val === undefined) return null;
-  if (typeof val === 'string' || typeof val === 'number') return val;
-  return String(val);
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number') return val;
+  if (typeof val === 'boolean') return val ? 1 : 0;
+  return JSON.stringify(val);
 }
 
 function insertSession(db: DatabaseSync, s: SessionMeta): void {
@@ -196,11 +198,15 @@ function insertSession(db: DatabaseSync, s: SessionMeta): void {
   db.prepare(`INSERT INTO session (${SESSION_COLUMNS.join(', ')}) VALUES (${placeholders})`).run(...values);
 }
 
+function v(val: unknown): string | number | null {
+  return asSQLValue(val);
+}
+
 function insertMessages(db: DatabaseSync, messages: Message[]): void {
   const placeholders = MESSAGE_COLUMNS.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO message (${MESSAGE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const msg of messages) {
-    stmt.run(msg.id, msg.session_id, msg.time_created, msg.time_updated, msg.data);
+    stmt.run(v(msg.id), v(msg.session_id), v(msg.time_created), v(msg.time_updated), v(msg.data));
   }
 }
 
@@ -208,7 +214,7 @@ function insertParts(db: DatabaseSync, parts: Part[]): void {
   const placeholders = PART_COLUMNS.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO part (${PART_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const part of parts) {
-    stmt.run(part.id, part.message_id, part.session_id, part.time_created, part.time_updated, part.data);
+    stmt.run(v(part.id), v(part.message_id), v(part.session_id), v(part.time_created), v(part.time_updated), v(part.data));
   }
 }
 
@@ -216,7 +222,7 @@ function insertSessionMessages(db: DatabaseSync, items: SessionMessage[]): void 
   const placeholders = SESSION_MESSAGE_COLUMNS.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO session_message (${SESSION_MESSAGE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const sm of items) {
-    stmt.run(sm.id, sm.session_id, sm.type, sm.time_created, sm.time_updated, sm.data);
+    stmt.run(v(sm.id), v(sm.session_id), v(sm.type), v(sm.time_created), v(sm.time_updated), v(sm.data));
   }
 }
 
@@ -224,7 +230,7 @@ function insertTodos(db: DatabaseSync, items: Todo[]): void {
   const placeholders = TODO_COLUMNS.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO todo (${TODO_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const todo of items) {
-    stmt.run(todo.session_id, todo.content, todo.status, todo.priority, todo.position, todo.time_created, todo.time_updated);
+    stmt.run(v(todo.session_id), v(todo.content), v(todo.status), v(todo.priority), v(todo.position), v(todo.time_created), v(todo.time_updated));
   }
 }
 
@@ -232,7 +238,7 @@ function insertShares(db: DatabaseSync, items: SessionShare[]): void {
   const placeholders = SHARE_COLUMNS.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO session_share (${SHARE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const share of items) {
-    stmt.run(share.session_id, share.id, share.secret, share.url, share.time_created, share.time_updated);
+    stmt.run(v(share.session_id), v(share.id), v(share.secret), v(share.url), v(share.time_created), v(share.time_updated));
   }
 }
 
