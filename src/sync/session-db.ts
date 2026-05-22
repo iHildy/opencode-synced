@@ -156,12 +156,42 @@ export function readSessionsFromDB(dbPath: string): Session[] {
   }
 }
 
+function arrayToObject(arr: unknown[], colNames: string[]): Record<string, unknown> {
+  const obj: Record<string, unknown> = {};
+  for (let i = 0; i < colNames.length; i++) {
+    obj[colNames[i]] = arr[i] ?? null;
+  }
+  return obj;
+}
+
 export function readSessionsFromDir(dir: string): Session[] {
   if (!fs.existsSync(dir)) return [];
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
   return files.map((file) => {
     const content = fs.readFileSync(path.join(dir, file), 'utf-8');
     const parsed = JSON.parse(content);
+
+    if (Array.isArray(parsed.session) && parsed.columns?.session) {
+      const session = arrayToObject(parsed.session, parsed.columns.session);
+      const messages = (parsed.message ?? []).map((row: unknown[]) => {
+        const msg = arrayToObject(row, parsed.columns.message);
+        (msg as Record<string, unknown>).parts = (parsed.parts ?? [])
+          .filter((p: unknown[]) => p[1] === msg.id)
+          .map((p: unknown[]) => arrayToObject(p, parsed.columns.parts));
+        return msg;
+      });
+      const session_messages = (parsed.session_messages ?? []).map((row: unknown[]) =>
+        arrayToObject(row, parsed.columns.session_message)
+      );
+      return {
+        session: session as unknown as SessionMeta,
+        messages,
+        session_messages,
+        todos: [],
+        session_shares: [],
+      } as Session;
+    }
+
     return {
       session: parsed.session ?? parsed,
       messages: parsed.messages ?? [],
