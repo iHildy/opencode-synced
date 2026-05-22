@@ -48,6 +48,7 @@ import {
   isRetryableTursoError,
   type TursoSyncPreference,
 } from './turso.js';
+import { syncSessions } from './session-merge.js';
 import {
   createLogger,
   extractTextFromResponse,
@@ -950,6 +951,13 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         await syncRepoToLocal(plan, overrides);
         await runSecretsPullIfConfigured(config);
 
+        if (config.includeSessions && !isTursoSessionBackend(config)) {
+          const sessionDbPath = path.join(locations.xdg.dataDir, 'opencode', 'opencode.db');
+          const sessionsDir = path.join(repoRoot, 'data', 'sessions');
+          const result = await syncSessions(sessionDbPath, sessionsDir);
+          log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
+        }
+
         await updateState(locations, {
           lastPull: new Date().toISOString(),
           lastRemoteUpdate: new Date().toISOString(),
@@ -987,6 +995,14 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
+
+        if (config.includeSessions && !isTursoSessionBackend(config)) {
+          const sessionDbPath = path.join(locations.xdg.dataDir, 'opencode', 'opencode.db');
+          const sessionsDir = path.join(repoRoot, 'data', 'sessions');
+          const result = await syncSessions(sessionDbPath, sessionsDir);
+          log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
+        }
+
         await syncLocalToRepo(plan, overrides, {
           overridesPath: locations.overridesPath,
           allowMcpSecrets: canCommitMcpSecrets(config),
@@ -1389,6 +1405,14 @@ async function runStartup(
     const plan = buildSyncPlan(config, locations, repoRoot);
     await syncRepoToLocal(plan, overrides);
     await options.runSecretsPullIfConfigured(config);
+
+    if (config.includeSessions && !isTursoSessionBackend(config)) {
+      const sessionDbPath = path.join(locations.xdg.dataDir, 'opencode', 'opencode.db');
+      const sessionsDir = path.join(repoRoot, 'data', 'sessions');
+      const result = await syncSessions(sessionDbPath, sessionsDir);
+      log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
+    }
+
     await updateState(locations, {
       lastPull: new Date().toISOString(),
       lastRemoteUpdate: new Date().toISOString(),
@@ -1399,6 +1423,14 @@ async function runStartup(
 
   const overrides = await loadOverrides(locations);
   const plan = buildSyncPlan(config, locations, repoRoot);
+
+  if (config.includeSessions && !isTursoSessionBackend(config)) {
+    const sessionDbPath = path.join(locations.xdg.dataDir, 'opencode', 'opencode.db');
+    const sessionsDir = path.join(repoRoot, 'data', 'sessions');
+    const result = await syncSessions(sessionDbPath, sessionsDir);
+    log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
+  }
+
   await syncLocalToRepo(plan, overrides, {
     overridesPath: locations.overridesPath,
     allowMcpSecrets: canCommitMcpSecrets(config),
