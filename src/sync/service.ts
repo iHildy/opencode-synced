@@ -49,6 +49,7 @@ import {
   type TursoSyncPreference,
 } from './turso.js';
 import { syncSessions } from './session-merge.js';
+import { createNodeShell } from './shell.js';
 import {
   createLogger,
   extractTextFromResponse,
@@ -116,6 +117,10 @@ export interface SyncService {
 }
 
 export function createSyncService(ctx: SyncServiceContext): SyncService {
+  if (!ctx.$) {
+    ctx.$ = createNodeShell() as unknown as SyncServiceContext['$'];
+  }
+
   const locations = resolveSyncLocations();
   const log = createLogger(ctx.client);
   const lockPath = path.join(path.dirname(locations.statePath), 'sync.lock');
