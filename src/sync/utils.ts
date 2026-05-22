@@ -52,6 +52,20 @@ export async function showToast(
   }
 }
 
+type NotifyVariant = 'info' | 'success' | 'warning' | 'error';
+
+export async function notify(
+  client: Client,
+  emoji: string,
+  message: string,
+  variant: NotifyVariant = 'info'
+): Promise<void> {
+  const full = `${emoji} ${message}`;
+  const level = variant === 'error' ? 'error' : variant === 'warning' ? 'warn' : 'info';
+  log(client, level, full);
+  await showToast(client, full, variant);
+}
+
 export function unwrapData<T>(response: unknown): T | null {
   if (!response || typeof response !== 'object') return null;
   const maybeError = (response as { error?: unknown }).error;

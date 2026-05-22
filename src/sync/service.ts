@@ -51,6 +51,7 @@ import {
 import {
   createLogger,
   extractTextFromResponse,
+  notify,
   resolveSmallModel,
   showToast,
   unwrapData,
@@ -600,17 +601,19 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         } catch (error) {
           const message = `Failed to load opencode-synced config: ${formatError(error)}`;
           log.error(message, { path: locations.syncConfigPath });
-          await showToast(
+          await notify(
             ctx.client,
-            `Failed to load opencode-synced config. Check ${locations.syncConfigPath} for JSON errors.`,
+            '❌',
+            `Failed to load config. Check ${locations.syncConfigPath} for JSON errors.`,
             'error'
           );
           return;
         }
         if (!config) {
           stopTursoSyncLoop();
-          await showToast(
+          await notify(
             ctx.client,
+            'ℹ️',
             'Configure opencode-synced with /sync-init or link to an existing repo with /sync-link',
             'info'
           );
@@ -618,6 +621,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         }
         try {
           assertValidSecretsBackend(config);
+          await notify(ctx.client, '🔄', 'Syncing config...', 'info');
           let tursoWarning: string | null = null;
           if (isTursoSessionBackend(config)) {
             try {
@@ -632,13 +636,14 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
             runSecretsPullIfConfigured,
           });
           ensureTursoSyncLoop(config);
+          await notify(ctx.client, '✅', 'opencode-synced ready', 'success');
           if (tursoWarning) {
             log.warn(tursoWarning);
             await showToast(ctx.client, tursoWarning, 'warning');
           }
         } catch (error) {
           log.error('Startup sync failed', { error: formatError(error) });
-          await showToast(ctx.client, formatError(error), 'error');
+          await notify(ctx.client, '❌', formatError(error), 'error');
         }
       }),
     status: async () => {
@@ -796,6 +801,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         }
         ensureTursoSyncLoop(config);
 
+        await notify(ctx.client, '🚀', `Sync configured — ${repoIdentifier} (${resolveRepoBranch(config)})`, 'success');
         return lines.join('\n');
       }),
     link: (options: LinkOptions) =>
@@ -810,6 +816,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
               expectation
           );
         }
+
+        await notify(ctx.client, '🔗', 'Linking to sync repo...', 'info');
 
         const found = await findSyncRepo(ctx.$, options.repo, {
           disableAutoDiscovery: disableAutoRepoDiscovery,
@@ -904,7 +912,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           lines.push('', ...linkNotes);
         }
 
-        await showToast(ctx.client, 'Config synced. Restart opencode to apply.', 'info');
+        await notify(ctx.client, '🔗', `Linked to ${found.owner}/${found.name}. Restart opencode to apply.`, 'success');
         return lines.join('\n');
       }),
     pull: () =>
@@ -924,10 +932,13 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           );
         }
 
+        await notify(ctx.client, '📥', 'Pulling config from GitHub...', 'info');
+
         const update = await fetchAndFastForward(ctx.$, repoRoot, branch);
         if (!update.updated) {
           const tursoSummary = await runForegroundTursoCycle(config, 'pull-up-to-date');
           ensureTursoSyncLoop(config);
+          await notify(ctx.client, '📥', 'Already up to date', 'success');
           if (tursoSummary) {
             return ['Already up to date.', tursoSummary].join('\n');
           }
@@ -947,7 +958,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         const tursoSummary = await runForegroundTursoCycle(config, 'pull-updated');
         ensureTursoSyncLoop(config);
 
-        await showToast(ctx.client, 'Config updated. Restart opencode to apply.', 'info');
+        await notify(ctx.client, '📥', 'Config updated. Restart opencode to apply.', 'success');
         if (tursoSummary) {
           return [
             'Remote config applied. Restart opencode to use new settings.',
@@ -972,6 +983,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           );
         }
 
+        await notify(ctx.client, '📤', 'Pushing config to GitHub...', 'info');
+
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
         await syncLocalToRepo(plan, overrides, {
@@ -985,6 +998,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           ensureTursoSyncLoop(config);
           try {
             const secretsResult = await runSecretsPushIfConfigured(config);
+            await notify(ctx.client, '📤', 'No local changes to push', 'info');
             const lines: string[] = [];
             if (secretsResult === 'pushed') {
               lines.push('No local changes to push. Secrets updated.');
@@ -1025,6 +1039,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const tursoSummary = await runForegroundTursoCycle(config, 'push-updated');
         ensureTursoSyncLoop(config);
+
+        await notify(ctx.client, '📤', `Pushed: ${message}`, 'success');
 
         if (secretsFailure) {
           const lines = [`Pushed changes: ${message}. Secrets push failed: ${secretsFailure}`];
