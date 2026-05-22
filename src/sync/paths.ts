@@ -274,25 +274,8 @@ export function buildSyncPlan(
     }
 
     if (config.includeSessions && !isTursoSessionBackend(config)) {
-      items.push({
-        localPath: path.join(dataRoot, SESSION_DB_FILE),
-        repoPath: path.join(repoDataRoot, SESSION_DB_FILE),
-        type: 'file',
-        isSecret: true,
-        isConfigFile: false,
-        preserveWhenMissing: true,
-      });
-
-      for (const dirName of SESSION_DIRS) {
-        items.push({
-          localPath: path.join(dataRoot, dirName),
-          repoPath: path.join(repoDataRoot, dirName),
-          type: 'dir',
-          isSecret: true,
-          isConfigFile: false,
-          preserveWhenMissing: true,
-        });
-      }
+      // Session sync uses per-session JSON merge (syncSessions),
+      // NOT raw DB/storage copy — to avoid overwriting local sessions on pull.
     }
 
     if (config.includePromptStash) {
