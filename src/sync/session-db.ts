@@ -196,13 +196,36 @@ function asSQLValue(val: unknown): string | number | null {
   return JSON.stringify(val);
 }
 
-function insertSession(db: DatabaseSync, s: SessionMeta): void {
-  const placeholders = SESSION_COLUMNS.map(() => '?').join(', ');
+function upsertSession(db: DatabaseSync, s: SessionMeta): void {
   const values = SESSION_COLUMNS.map((col) => asSQLValue((s as unknown as Record<string, unknown>)[col]));
   try {
-    db.prepare(`INSERT INTO session (${SESSION_COLUMNS.join(', ')}) VALUES (${placeholders})`).run(...values);
+    db.prepare(`INSERT OR REPLACE INTO session (${SESSION_COLUMNS.join(', ')}) VALUES (${SESSION_COLUMNS.map(() => '?').join(',')})`).run(...values);
   } catch (e) {
-    throw new Error(`insertSession failed for session ${s.id}: ${e}`);
+    throw new Error(`upsertSession failed for session ${s.id}: ${e}`);
+  }
+}
+
+function upsertMessages(db: DatabaseSync, messages: Message[]): void {
+  const placeholders = MESSAGE_COLUMNS.map(() => '?').join(', ');
+  const stmt = db.prepare(`INSERT OR REPLACE INTO message (${MESSAGE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
+  for (const msg of messages) {
+    try {
+      stmt.run(v(msg.id), v(msg.session_id), v(msg.time_created), v(msg.time_updated), v(msg.data));
+    } catch (e) {
+      throw new Error(`upsertMessages failed for msg ${msg.id}: ${e}`);
+    }
+  }
+}
+
+function upsertParts(db: DatabaseSync, parts: Part[]): void {
+  const placeholders = PART_COLUMNS.map(() => '?').join(', ');
+  const stmt = db.prepare(`INSERT OR REPLACE INTO part (${PART_COLUMNS.join(', ')}) VALUES (${placeholders})`);
+  for (const part of parts) {
+    try {
+      stmt.run(v(part.id), v(part.message_id), v(part.session_id), v(part.time_created), v(part.time_updated), v(part.data));
+    } catch (e) {
+      throw new Error(`upsertParts failed for part ${part.id}: ${e}`);
+    }
   }
 }
 
@@ -210,53 +233,25 @@ function v(val: unknown): string | number | null {
   return asSQLValue(val);
 }
 
-function insertMessages(db: DatabaseSync, messages: Message[]): void {
-  const placeholders = MESSAGE_COLUMNS.map(() => '?').join(', ');
-  const stmt = db.prepare(`INSERT INTO message (${MESSAGE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
-  for (const msg of messages) {
-    try {
-      stmt.run(v(msg.id), v(msg.session_id), v(msg.time_created), v(msg.time_updated), v(msg.data));
-    } catch (e) {
-      throw new Error(`insertMessages failed for msg ${msg.id}: ${e}`);
-    }
-  }
-}
-
-function insertParts(db: DatabaseSync, parts: Part[]): void {
-  const placeholders = PART_COLUMNS.map(() => '?').join(', ');
-  const stmt = db.prepare(`INSERT INTO part (${PART_COLUMNS.join(', ')}) VALUES (${placeholders})`);
-  for (const part of parts) {
-    try {
-      stmt.run(v(part.id), v(part.message_id), v(part.session_id), v(part.time_created), v(part.time_updated), v(part.data));
-    } catch (e) {
-      throw new Error(`insertParts failed for part ${part.id}: ${e}`);
-    }
-  }
-}
-
-function insertSessionMessages(db: DatabaseSync, items: SessionMessage[]): void {
+function upsertSessionMessages(db: DatabaseSync, items: SessionMessage[]): void {
   const placeholders = SESSION_MESSAGE_COLUMNS.map(() => '?').join(', ');
-  const stmt = db.prepare(`INSERT INTO session_message (${SESSION_MESSAGE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
+  const stmt = db.prepare(`INSERT OR REPLACE INTO session_message (${SESSION_MESSAGE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const sm of items) {
-    try {
-      stmt.run(v(sm.id), v(sm.session_id), v(sm.type), v(sm.time_created), v(sm.time_updated), v(sm.data));
-    } catch (e) {
-      throw new Error(`insertSessionMessages failed for sm ${sm.id}: ${e}`);
-    }
+    stmt.run(v(sm.id), v(sm.session_id), v(sm.type), v(sm.time_created), v(sm.time_updated), v(sm.data));
   }
 }
 
-function insertTodos(db: DatabaseSync, items: Todo[]): void {
+function upsertTodos(db: DatabaseSync, items: Todo[]): void {
   const placeholders = TODO_COLUMNS.map(() => '?').join(', ');
-  const stmt = db.prepare(`INSERT INTO todo (${TODO_COLUMNS.join(', ')}) VALUES (${placeholders})`);
+  const stmt = db.prepare(`INSERT OR REPLACE INTO todo (${TODO_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const todo of items) {
     stmt.run(v(todo.session_id), v(todo.content), v(todo.status), v(todo.priority), v(todo.position), v(todo.time_created), v(todo.time_updated));
   }
 }
 
-function insertShares(db: DatabaseSync, items: SessionShare[]): void {
+function upsertShares(db: DatabaseSync, items: SessionShare[]): void {
   const placeholders = SHARE_COLUMNS.map(() => '?').join(', ');
-  const stmt = db.prepare(`INSERT INTO session_share (${SHARE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
+  const stmt = db.prepare(`INSERT OR REPLACE INTO session_share (${SHARE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const share of items) {
     stmt.run(v(share.session_id), v(share.id), v(share.secret), v(share.url), v(share.time_created), v(share.time_updated));
   }
@@ -268,18 +263,14 @@ export function writeSessionsToDB(dbPath: string, sessions: Session[]): void {
   try {
     db.exec('BEGIN TRANSACTION');
     for (const s of sessions) {
-      const exists = db.prepare('SELECT 1 FROM session WHERE id = ?').get(s.session.id);
-      if (exists) {
-        deleteSession(db, s.session.id);
-      }
-      insertSession(db, s.session);
-      insertMessages(db, s.messages);
+      upsertSession(db, s.session);
+      upsertMessages(db, s.messages);
       for (const msg of s.messages) {
-        insertParts(db, msg.parts);
+        upsertParts(db, msg.parts);
       }
-      insertSessionMessages(db, s.session_messages);
-      insertTodos(db, s.todos);
-      insertShares(db, s.session_shares);
+      upsertSessionMessages(db, s.session_messages);
+      upsertTodos(db, s.todos);
+      upsertShares(db, s.session_shares);
     }
     db.exec('COMMIT');
   } catch (error) {
