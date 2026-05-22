@@ -59,6 +59,7 @@ const PROMPT_STASH_FILES = ['prompt-stash.jsonl', 'prompt-history.jsonl'];
 const MODEL_FAVORITES_FILE = 'model.json';
 const SKILLS_DIR = 'skills';
 const HOME_AGENTS_DIR = '.agents';
+const GLOBAL_DAT_FILE = 'opencode.global.dat';
 
 export function resolveHomeDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -162,6 +163,18 @@ export function resolveRepoRoot(config: SyncConfig | null, locations: SyncLocati
   return locations.defaultRepoDir;
 }
 
+export function resolveProjectsFilePath(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): string {
+  if (platform === 'win32') {
+    const appData = env.APPDATA ?? path.join(env.USERPROFILE ?? '', 'AppData', 'Roaming');
+    return path.join(appData, 'ai.opencode.desktop', GLOBAL_DAT_FILE);
+  }
+  const dataDir = env.XDG_DATA_HOME ?? path.join(resolveHomeDir(env, platform), '.local', 'share');
+  return path.join(dataDir, 'opencode', GLOBAL_DAT_FILE);
+}
+
 export function buildSyncPlan(
   config: NormalizedSyncConfig,
   locations: SyncLocations,
@@ -237,6 +250,17 @@ export function buildSyncPlan(
       type: 'file',
       isSecret: false,
       isConfigFile: false,
+    });
+  }
+
+  if (config.includeProjects) {
+    items.push({
+      localPath: resolveProjectsFilePath(process.env, platform),
+      repoPath: path.join(repoDataRoot, GLOBAL_DAT_FILE),
+      type: 'file',
+      isSecret: false,
+      isConfigFile: false,
+      preserveWhenMissing: true,
     });
   }
 
