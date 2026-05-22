@@ -19,7 +19,7 @@ import {
 import { SyncCommandError, SyncConfigMissingError } from './errors.js';
 import type { SyncLockInfo } from './lock.js';
 import { withSyncLock } from './lock.js';
-import { buildSyncPlan, resolveRepoRoot, resolveSyncLocations } from './paths.js';
+import { buildSyncPlan, resolveProjectsFilePath, resolveRepoRoot, resolveSyncLocations } from './paths.js';
 import {
   commitAll,
   ensureRepoCloned,
@@ -49,6 +49,7 @@ import {
   type TursoSyncPreference,
 } from './turso.js';
 import { syncSessions } from './session-merge.js';
+import { syncGlobalData } from './projects-merge.js';
 import { createNodeShell } from './shell.js';
 import {
   createLogger,
@@ -963,6 +964,10 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
         }
 
+        if (config.includeProjects) {
+          syncGlobalData(resolveProjectsFilePath(), path.join(repoRoot, 'data', 'opencode.global.dat'));
+        }
+
         await updateState(locations, {
           lastPull: new Date().toISOString(),
           lastRemoteUpdate: new Date().toISOString(),
@@ -1006,6 +1011,10 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           const sessionsDir = path.join(repoRoot, 'data', 'sessions');
           const result = await syncSessions(sessionDbPath, sessionsDir);
           log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
+        }
+
+        if (config.includeProjects) {
+          syncGlobalData(resolveProjectsFilePath(), path.join(repoRoot, 'data', 'opencode.global.dat'));
         }
 
         await syncLocalToRepo(plan, overrides, {
@@ -1418,6 +1427,10 @@ async function runStartup(
       log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
     }
 
+    if (config.includeProjects) {
+      syncGlobalData(resolveProjectsFilePath(), path.join(repoRoot, 'data', 'opencode.global.dat'));
+    }
+
     await updateState(locations, {
       lastPull: new Date().toISOString(),
       lastRemoteUpdate: new Date().toISOString(),
@@ -1434,6 +1447,10 @@ async function runStartup(
     const sessionsDir = path.join(repoRoot, 'data', 'sessions');
     const result = await syncSessions(sessionDbPath, sessionsDir);
     log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
+  }
+
+  if (config.includeProjects) {
+    syncGlobalData(resolveProjectsFilePath(), path.join(repoRoot, 'data', 'opencode.global.dat'));
   }
 
   await syncLocalToRepo(plan, overrides, {

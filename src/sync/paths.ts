@@ -253,17 +253,6 @@ export function buildSyncPlan(
     });
   }
 
-  if (config.includeProjects) {
-    items.push({
-      localPath: resolveProjectsFilePath(process.env, platform),
-      repoPath: path.join(repoDataRoot, GLOBAL_DAT_FILE),
-      type: 'file',
-      isSecret: false,
-      isConfigFile: false,
-      preserveWhenMissing: true,
-    });
-  }
-
   if (config.includeSecrets) {
     if (!usingSecretsBackend) {
       items.push(
