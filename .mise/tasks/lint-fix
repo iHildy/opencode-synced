@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+#MISE description="Run Biome lint with auto-fix"
+biome lint --write .
