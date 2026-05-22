@@ -173,15 +173,19 @@ export function readSessionsFromDir(dir: string): Session[] {
 }
 
 function deleteSession(db: DatabaseSync, id: string): void {
-  const msgIds = db.prepare('SELECT id FROM message WHERE session_id = ?').all(id) as { id: string }[];
-  for (const { id: mid } of msgIds) {
-    db.prepare('DELETE FROM part WHERE message_id = ?').run(mid);
+  try {
+    const msgIds = db.prepare('SELECT id FROM message WHERE session_id = ?').all(id) as { id: string }[];
+    for (const { id: mid } of msgIds) {
+      db.prepare('DELETE FROM part WHERE message_id = ?').run(mid);
+    }
+    db.prepare('DELETE FROM message WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM session_message WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM todo WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM session_share WHERE session_id = ?').run(id);
+    db.prepare('DELETE FROM session WHERE id = ?').run(id);
+  } catch (e) {
+    throw new Error(`deleteSession failed for session ${id}: ${e}`);
   }
-  db.prepare('DELETE FROM message WHERE session_id = ?').run(id);
-  db.prepare('DELETE FROM session_message WHERE session_id = ?').run(id);
-  db.prepare('DELETE FROM todo WHERE session_id = ?').run(id);
-  db.prepare('DELETE FROM session_share WHERE session_id = ?').run(id);
-  db.prepare('DELETE FROM session WHERE id = ?').run(id);
 }
 
 function asSQLValue(val: unknown): string | number | null {
@@ -195,7 +199,11 @@ function asSQLValue(val: unknown): string | number | null {
 function insertSession(db: DatabaseSync, s: SessionMeta): void {
   const placeholders = SESSION_COLUMNS.map(() => '?').join(', ');
   const values = SESSION_COLUMNS.map((col) => asSQLValue((s as unknown as Record<string, unknown>)[col]));
-  db.prepare(`INSERT INTO session (${SESSION_COLUMNS.join(', ')}) VALUES (${placeholders})`).run(...values);
+  try {
+    db.prepare(`INSERT INTO session (${SESSION_COLUMNS.join(', ')}) VALUES (${placeholders})`).run(...values);
+  } catch (e) {
+    throw new Error(`insertSession failed for session ${s.id}: ${e}`);
+  }
 }
 
 function v(val: unknown): string | number | null {
@@ -206,7 +214,11 @@ function insertMessages(db: DatabaseSync, messages: Message[]): void {
   const placeholders = MESSAGE_COLUMNS.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO message (${MESSAGE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const msg of messages) {
-    stmt.run(v(msg.id), v(msg.session_id), v(msg.time_created), v(msg.time_updated), v(msg.data));
+    try {
+      stmt.run(v(msg.id), v(msg.session_id), v(msg.time_created), v(msg.time_updated), v(msg.data));
+    } catch (e) {
+      throw new Error(`insertMessages failed for msg ${msg.id}: ${e}`);
+    }
   }
 }
 
@@ -214,7 +226,11 @@ function insertParts(db: DatabaseSync, parts: Part[]): void {
   const placeholders = PART_COLUMNS.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO part (${PART_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const part of parts) {
-    stmt.run(v(part.id), v(part.message_id), v(part.session_id), v(part.time_created), v(part.time_updated), v(part.data));
+    try {
+      stmt.run(v(part.id), v(part.message_id), v(part.session_id), v(part.time_created), v(part.time_updated), v(part.data));
+    } catch (e) {
+      throw new Error(`insertParts failed for part ${part.id}: ${e}`);
+    }
   }
 }
 
@@ -222,7 +238,11 @@ function insertSessionMessages(db: DatabaseSync, items: SessionMessage[]): void 
   const placeholders = SESSION_MESSAGE_COLUMNS.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO session_message (${SESSION_MESSAGE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
   for (const sm of items) {
-    stmt.run(v(sm.id), v(sm.session_id), v(sm.type), v(sm.time_created), v(sm.time_updated), v(sm.data));
+    try {
+      stmt.run(v(sm.id), v(sm.session_id), v(sm.type), v(sm.time_created), v(sm.time_updated), v(sm.data));
+    } catch (e) {
+      throw new Error(`insertSessionMessages failed for sm ${sm.id}: ${e}`);
+    }
   }
 }
 

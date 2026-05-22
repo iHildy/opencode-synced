@@ -112,8 +112,12 @@ export async function syncSessions(
     merged.push(merge(local, remote));
   }
 
-  writeSessionsToDB(dbPath, merged);
-  writeSessionsToDir(sessionsDir, merged);
+  if (remoteSessions.length === 0) {
+    writeSessionsToDir(sessionsDir, merged);
+  } else {
+    writeSessionsToDB(dbPath, merged);
+    writeSessionsToDir(sessionsDir, merged);
+  }
 
   return {
     total: allIds.size,
