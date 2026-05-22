@@ -86,14 +86,6 @@ export function resolveXdgPaths(
     };
   }
 
-  if (platform === 'win32') {
-    const configDir = env.APPDATA ?? path.join(homeDir, 'AppData', 'Roaming');
-    const dataDir = env.LOCALAPPDATA ?? path.join(homeDir, 'AppData', 'Local');
-    // Windows doesn't have XDG_STATE_HOME equivalent, use LOCALAPPDATA
-    const stateDir = env.LOCALAPPDATA ?? path.join(homeDir, 'AppData', 'Local');
-    return { homeDir, configDir, dataDir, stateDir };
-  }
-
   const configDir = env.XDG_CONFIG_HOME ?? path.join(homeDir, '.config');
   const dataDir = env.XDG_DATA_HOME ?? path.join(homeDir, '.local', 'share');
   const stateDir = env.XDG_STATE_HOME ?? path.join(homeDir, '.local', 'state');
@@ -106,7 +98,7 @@ export function resolveSyncLocations(
   platform: NodeJS.Platform = process.platform
 ): SyncLocations {
   const xdg = resolveXdgPaths(env, platform);
-  const customConfigDir = env.opencode_config_dir;
+  const customConfigDir = env.OPENCODE_CONFIG_DIR;
   const configRoot = customConfigDir
     ? path.resolve(expandHome(customConfigDir, xdg.homeDir))
     : path.join(xdg.configDir, 'opencode');

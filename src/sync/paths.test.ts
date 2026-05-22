@@ -16,21 +16,19 @@ describe('resolveXdgPaths', () => {
   it('resolves windows defaults', () => {
     const env = {
       USERPROFILE: 'C:\\Users\\Test',
-      APPDATA: 'C:\\Users\\Test\\AppData\\Roaming',
-      LOCALAPPDATA: 'C:\\Users\\Test\\AppData\\Local',
     } as NodeJS.ProcessEnv;
     const paths = resolveXdgPaths(env, 'win32');
 
-    expect(paths.configDir).toBe('C:\\Users\\Test\\AppData\\Roaming');
-    expect(paths.dataDir).toBe('C:\\Users\\Test\\AppData\\Local');
+    expect(paths.configDir).toBe('C:\\Users\\Test\\.config');
+    expect(paths.dataDir).toBe('C:\\Users\\Test\\.local\\share');
   });
 });
 
 describe('resolveSyncLocations', () => {
-  it('respects opencode_config_dir', () => {
+  it('respects OPENCODE_CONFIG_DIR', () => {
     const env = {
       HOME: '/home/test',
-      opencode_config_dir: '/custom/opencode',
+      OPENCODE_CONFIG_DIR: '/custom/opencode',
     } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');
 
