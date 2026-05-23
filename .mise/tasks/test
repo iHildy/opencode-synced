@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-#MISE description="Run tests"
-bun test
