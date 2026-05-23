@@ -23,17 +23,11 @@ interface ParsedCommand {
 }
 
 function parseFrontmatter(content: string): { frontmatter: CommandFrontmatter; body: string } {
-  // EN: Strip UTF-8 BOM, normalize CRLF → LF (cross-platform .md files)
-  // RU: Удаление BOM, нормализация CRLF → LF (кроссплатформенность)
-  const normalized = content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   const frontmatterRegex = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
-  const match = normalized.match(frontmatterRegex);
+  const match = content.match(frontmatterRegex);
 
   if (!match) {
-    // EN: No frontmatter — use first non-empty line as description fallback
-    // RU: Нет frontmatter — первая непустая строка как описание
-    const firstLine = normalized.split('\n').find((l) => l.trim()) ?? '';
-    return { frontmatter: { description: firstLine.trim() }, body: normalized.trim() };
+    return { frontmatter: {}, body: content.trim() };
   }
 
   const [, yamlContent, body] = match;
@@ -109,9 +103,7 @@ async function loadCommands(): Promise<ParsedCommand[]> {
         frontmatter,
         template: body,
       });
-    } catch {
-      // Skip malformed command files
-    }
+    } catch {}
   }
 
   return commands;
@@ -278,9 +270,7 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
 
   // Delay startup sync slightly to ensure TUI is connected
   setTimeout(() => {
-    service.startupSync().catch(() => {
-      // Errors are already logged internally by startupSync
-    });
+    void service.startupSync();
   }, 1000);
 
   return {
