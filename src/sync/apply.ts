@@ -1,4 +1,3 @@
-import type { Dirent } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -111,90 +110,6 @@ export async function syncLocalToRepo(
   await writeExtraPathManifest(plan, plan.extraSecrets);
 }
 
-interface FileEntry {
-  relativePath: string;
-  mtimeMs: number;
-  size: number;
-  isDirectory: boolean;
-}
-
-// EN: Recursively walk a directory, collecting file entries with mtime + size for diff comparison
-// RU: Рекурсивный обход директории с mtime + size для diff-сравнения
-async function walkDir(rootPath: string, relativeDir = ''): Promise<FileEntry[]> {
-  const entries: FileEntry[] = [];
-  let dirEntries: Dirent[];
-  try {
-    dirEntries = await fs.readdir(rootPath, { withFileTypes: true });
-  } catch {
-    return entries;
-  }
-  for (const entry of dirEntries) {
-    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) {
-      entries.push({ relativePath, mtimeMs: 0, size: 0, isDirectory: true });
-      const nested = await walkDir(path.join(rootPath, entry.name), relativePath);
-      entries.push(...nested);
-    } else if (entry.isFile()) {
-      try {
-        const stat = await fs.stat(path.join(rootPath, entry.name));
-        entries.push({ relativePath, mtimeMs: stat.mtimeMs, size: stat.size, isDirectory: false });
-      } catch {
-        // skip unreadable files
-      }
-    }
-  }
-  return entries;
-}
-
-// EN: Diff-based directory copy — only copies new/changed files, removes deleted ones
-// EN: Avoids full directory recreation (unlike removePath + copyDirRecursive)
-// RU: Diff-based копирование — копирует только новые/изменённые файлы, удаляет пропавшие
-// RU: Без полного пересоздания директорий (в отличие от removePath + copyDirRecursive)
-async function applyDirDiff(sourceRoot: string, destRoot: string): Promise<void> {
-  const [sourceFiles, destFiles] = await Promise.all([walkDir(sourceRoot), walkDir(destRoot)]);
-
-  const sourceMap = new Map<string, FileEntry>();
-  for (const f of sourceFiles) sourceMap.set(f.relativePath, f);
-
-  const destMap = new Map<string, FileEntry>();
-  for (const f of destFiles) destMap.set(f.relativePath, f);
-
-  const actions: Array<() => Promise<void>> = [];
-
-  for (const [relPath, src] of sourceMap) {
-    const dst = destMap.get(relPath);
-    if (!dst) {
-      if (src.isDirectory) {
-        actions.push(async () => {
-          await fs.mkdir(path.join(destRoot, relPath), { recursive: true });
-        });
-      } else {
-        actions.push(async () => {
-          await copyFileWithMode(path.join(sourceRoot, relPath), path.join(destRoot, relPath));
-        });
-      }
-    } else if (
-      !src.isDirectory &&
-      !dst.isDirectory &&
-      (src.mtimeMs !== dst.mtimeMs || src.size !== dst.size)
-    ) {
-      actions.push(async () => {
-        await copyFileWithMode(path.join(sourceRoot, relPath), path.join(destRoot, relPath));
-      });
-    }
-  }
-
-  for (const [relPath] of destMap) {
-    if (!sourceMap.has(relPath)) {
-      actions.push(async () => {
-        await removePath(path.join(destRoot, relPath));
-      });
-    }
-  }
-
-  await Promise.all(actions.map((a) => a()));
-}
-
 async function copyItem(
   sourcePath: string,
   destinationPath: string,
@@ -222,8 +137,8 @@ async function copyItem(
     return;
   }
 
-  await fs.mkdir(destinationPath, { recursive: true });
-  await applyDirDiff(sourcePath, destinationPath);
+  await removePath(destinationPath);
+  await copyDirRecursive(sourcePath, destinationPath);
 }
 
 async function copyConfigForRepo(

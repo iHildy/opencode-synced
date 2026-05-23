@@ -23,12 +23,14 @@
     "access": "public"
   },
   "files": ["dist"],
+  "dependencies": {
+    "@opencode-ai/plugin": "1.0.85"
+  },
   "devDependencies": {
     "@biomejs/biome": "2.3.10",
     "@commitlint/cli": "^20.2.0",
     "@commitlint/config-conventional": "^20.2.0",
-    "@opencode-ai/plugin": "file:C:\\Users\\Aleks\\.config\\opencode\\node_modules\\@opencode-ai\\plugin",
-    "@types/node": "^22.19.19",
+    "@types/node": "^20.11.5",
     "bun-types": "latest",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",

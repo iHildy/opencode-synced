@@ -16,19 +16,21 @@ describe('resolveXdgPaths', () => {
   it('resolves windows defaults', () => {
     const env = {
       USERPROFILE: 'C:\\Users\\Test',
+      APPDATA: 'C:\\Users\\Test\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\Test\\AppData\\Local',
     } as NodeJS.ProcessEnv;
     const paths = resolveXdgPaths(env, 'win32');
 
-    expect(paths.configDir).toBe('C:\\Users\\Test\\.config');
-    expect(paths.dataDir).toBe('C:\\Users\\Test\\.local\\share');
+    expect(paths.configDir).toBe('C:\\Users\\Test\\AppData\\Roaming');
+    expect(paths.dataDir).toBe('C:\\Users\\Test\\AppData\\Local');
   });
 });
 
 describe('resolveSyncLocations', () => {
-  it('respects OPENCODE_CONFIG_DIR', () => {
+  it('respects opencode_config_dir', () => {
     const env = {
       HOME: '/home/test',
-      OPENCODE_CONFIG_DIR: '/custom/opencode',
+      opencode_config_dir: '/custom/opencode',
     } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');
 
@@ -233,7 +235,7 @@ describe('buildSyncPlan', () => {
     expect(plan.extraConfigs.allowlist.length).toBe(1);
   });
 
-  it('excludes session paths from plan when sessions use syncSessions merge', () => {
+  it('includes sqlite and legacy session paths when includeSessions is true', () => {
     const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');
     const config: SyncConfig = {
@@ -243,10 +245,20 @@ describe('buildSyncPlan', () => {
     };
 
     const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
-    const sessionDbItem = plan.items.find((item) => item.localPath.endsWith('opencode.db'));
-    expect(sessionDbItem).toBeUndefined();
-    const sessionDirItem = plan.items.find((item) => item.localPath.includes('storage/session'));
-    expect(sessionDirItem).toBeUndefined();
+    const expectedSessionPaths = [
+      '/.local/share/opencode/opencode.db',
+      '/.local/share/opencode/storage/session',
+      '/.local/share/opencode/storage/message',
+      '/.local/share/opencode/storage/part',
+      '/.local/share/opencode/storage/session_diff',
+    ];
+
+    for (const suffix of expectedSessionPaths) {
+      const sessionItem = plan.items.find((item) => item.localPath.endsWith(suffix));
+      expect(sessionItem).toBeTruthy();
+      expect(sessionItem?.isSecret).toBe(true);
+      expect(sessionItem?.preserveWhenMissing).toBe(true);
+    }
   });
 
   it('excludes git session paths when using turso session backend', () => {
