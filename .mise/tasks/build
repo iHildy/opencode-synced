@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-#MISE description="Build the project"
-set -e
-rm -rf dist
-tsc -p tsconfig.build.json
-cp -r src/command dist/command
