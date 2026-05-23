@@ -1,5 +1,5 @@
 ---
-description: Link to an existing sync repo / Привязать компьютер к существующему репозиторию синхронизации
+description: Link this computer to an existing sync repo
 ---
 
 You MUST call the `opencode_sync` tool with `command="link"`.

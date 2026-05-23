@@ -87,14 +87,14 @@ describe('isRetryableTursoError', () => {
 describe('path helpers', () => {
   it('resolves credential path and session db paths', () => {
     const locations = createLocations();
-    const p = (s: string) => s.replace(/\\/g, '/');
-    expect(p(resolveTursoCredentialPath(locations))).toBe(
+    expect(resolveTursoCredentialPath(locations)).toBe(
       '/home/test/.local/share/opencode/opencode-synced/turso-session.json'
     );
-    const result = resolveSessionDbPaths(locations);
-    expect(p(result.dbPath)).toBe('/home/test/.local/share/opencode/opencode.db');
-    expect(p(result.walPath)).toBe('/home/test/.local/share/opencode/opencode.db-wal');
-    expect(p(result.shmPath)).toBe('/home/test/.local/share/opencode/opencode.db-shm');
+    expect(resolveSessionDbPaths(locations)).toEqual({
+      dbPath: '/home/test/.local/share/opencode/opencode.db',
+      walPath: '/home/test/.local/share/opencode/opencode.db-wal',
+      shmPath: '/home/test/.local/share/opencode/opencode.db-shm',
+    });
   });
 });
 

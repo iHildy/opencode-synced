@@ -1,9 +1,8 @@
 ---
-description: Setup Turso for session sync / Настроить Turso для синхронизации сессий
+description: Install/auth/provision Turso for session sync on this machine
 ---
 
 You MUST call the `opencode_sync` tool with `command="sessions-setup-turso"`.
-Do not answer with plain text only.
 
 Behavior:
 - Run Turso CLI install if missing.
