@@ -89,6 +89,7 @@ export interface SyncState {
   lastSecretsHash?: string;
   lastSessionPull?: string;
   lastSessionPush?: string;
+  lastHead?: string;
 }
 
 export async function pathExists(filePath: string): Promise<boolean> {

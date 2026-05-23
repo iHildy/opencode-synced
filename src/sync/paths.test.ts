@@ -233,7 +233,7 @@ describe('buildSyncPlan', () => {
     expect(plan.extraConfigs.allowlist.length).toBe(1);
   });
 
-  it('includes sqlite and legacy session paths when includeSessions is true', () => {
+  it('excludes session paths from plan when sessions use syncSessions merge', () => {
     const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');
     const config: SyncConfig = {
@@ -243,20 +243,10 @@ describe('buildSyncPlan', () => {
     };
 
     const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
-    const expectedSessionPaths = [
-      '/.local/share/opencode/opencode.db',
-      '/.local/share/opencode/storage/session',
-      '/.local/share/opencode/storage/message',
-      '/.local/share/opencode/storage/part',
-      '/.local/share/opencode/storage/session_diff',
-    ];
-
-    for (const suffix of expectedSessionPaths) {
-      const sessionItem = plan.items.find((item) => item.localPath.endsWith(suffix));
-      expect(sessionItem).toBeTruthy();
-      expect(sessionItem?.isSecret).toBe(true);
-      expect(sessionItem?.preserveWhenMissing).toBe(true);
-    }
+    const sessionDbItem = plan.items.find((item) => item.localPath.endsWith('opencode.db'));
+    expect(sessionDbItem).toBeUndefined();
+    const sessionDirItem = plan.items.find((item) => item.localPath.includes('storage/session'));
+    expect(sessionDirItem).toBeUndefined();
   });
 
   it('excludes git session paths when using turso session backend', () => {

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import type { PluginInput } from '@opencode-ai/plugin';
 import { syncLocalToRepo, syncRepoToLocal } from './apply.js';
-import { generateCommitMessage } from './commit.js';
+
 import type { NormalizedSyncConfig } from './config.js';
 import {
   canCommitMcpSecrets,
@@ -19,7 +19,13 @@ import {
 import { SyncCommandError, SyncConfigMissingError } from './errors.js';
 import type { SyncLockInfo } from './lock.js';
 import { withSyncLock } from './lock.js';
-import { buildSyncPlan, resolveProjectsFilePath, resolveRepoRoot, resolveSyncLocations } from './paths.js';
+import {
+  buildSyncPlan,
+  resolveProjectsFilePath,
+  resolveRepoRoot,
+  resolveSyncLocations,
+} from './paths.js';
+import { syncGlobalData } from './projects-merge.js';
 import {
   commitAll,
   ensureRepoCloned,
@@ -27,6 +33,7 @@ import {
   fetchAndFastForward,
   findSyncRepo,
   getAuthenticatedUser,
+  getHeadHash,
   getRepoStatus,
   hasLocalChanges,
   isRepoCloned,
@@ -43,14 +50,13 @@ import {
   resolveSecretsBackendConfig,
   type SecretsBackend,
 } from './secrets-backend.js';
+import { syncSessions } from './session-merge.js';
+import { createNodeShell } from './shell.js';
 import {
   createTursoSessionBackend,
   isRetryableTursoError,
   type TursoSyncPreference,
 } from './turso.js';
-import { syncSessions } from './session-merge.js';
-import { syncGlobalData } from './projects-merge.js';
-import { createNodeShell } from './shell.js';
 import {
   createLogger,
   extractTextFromResponse,
@@ -483,8 +489,10 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
     }
     tursoIdleFlushTimer = setTimeout(() => {
       tursoIdleFlushTimer = null;
-      void skipIfBusy(async () => {
+      skipIfBusy(async () => {
         await flushQueuedTursoSync('idle-event');
+      }).catch(() => {
+        // Errors are already logged internally by skipIfBusy
       });
     }, 250);
   };
@@ -535,7 +543,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
     stopTursoSyncLoop();
     tursoSyncIntervalSec = nextInterval;
     tursoSyncTimer = setInterval(() => {
-      void skipIfBusy(async () => {
+      skipIfBusy(async () => {
         const latest = await loadSyncConfig(locations);
         if (!latest || !isTursoSessionBackend(latest)) {
           stopTursoSyncLoop();
@@ -550,6 +558,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         if (result.warning) {
           log.warn(result.warning, { reason: 'background' });
         }
+      }).catch(() => {
+        // Errors are already logged internally by skipIfBusy
       });
     }, nextInterval * 1000);
   };
@@ -808,7 +818,12 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         }
         ensureTursoSyncLoop(config);
 
-        await notify(ctx.client, '🚀', `Sync configured — ${repoIdentifier} (${resolveRepoBranch(config)})`, 'success');
+        await notify(
+          ctx.client,
+          '🚀',
+          `Sync configured — ${repoIdentifier} (${resolveRepoBranch(config)})`,
+          'success'
+        );
         return lines.join('\n');
       }),
     link: (options: LinkOptions) =>
@@ -919,7 +934,12 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           lines.push('', ...linkNotes);
         }
 
-        await notify(ctx.client, '🔗', `Linked to ${found.owner}/${found.name}. Restart opencode to apply.`, 'success');
+        await notify(
+          ctx.client,
+          '🔗',
+          `Linked to ${found.owner}/${found.name}. Restart opencode to apply.`,
+          'success'
+        );
         return lines.join('\n');
       }),
     pull: () =>
@@ -965,7 +985,10 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         }
 
         if (config.includeProjects) {
-          syncGlobalData(resolveProjectsFilePath(), path.join(repoRoot, 'data', 'opencode.global.dat'));
+          syncGlobalData(
+            resolveProjectsFilePath(),
+            path.join(repoRoot, 'data', 'opencode.global.dat')
+          );
         }
 
         await updateState(locations, {
@@ -1014,7 +1037,10 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         }
 
         if (config.includeProjects) {
-          syncGlobalData(resolveProjectsFilePath(), path.join(repoRoot, 'data', 'opencode.global.dat'));
+          syncGlobalData(
+            resolveProjectsFilePath(),
+            path.join(repoRoot, 'data', 'opencode.global.dat')
+          );
         }
 
         await syncLocalToRepo(plan, overrides, {
@@ -1051,7 +1077,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           }
         }
 
-        const message = await generateCommitMessage({ client: ctx.client, $: ctx.$ }, repoRoot);
+        const now = new Date();
+        const message = `Sync opencode config (${now.toISOString().slice(0, 10)})`;
         await commitAll(ctx.$, repoRoot, message);
         await pushBranch(ctx.$, repoRoot, branch);
 
@@ -1382,6 +1409,10 @@ function toRepoRelativePath(repoRoot: string, absolutePath: string): string {
   return path.relative(repoRoot, absolutePath).split(path.sep).join('/');
 }
 
+// EN: Startup sync — auto-commit dirty, HEAD-cache fetch skip, pull + session/project merge
+// EN: github push is fire-and-forget (.catch) — doesn't block startup
+// RU: Стартовая синхронизация — auto-commit при dirty, пропуск fetch по HEAD-кэшу, pull + merge сессий/проектов
+// RU: push в GitHub — fire-and-forget (.catch) — не блокирует запуск
 async function runStartup(
   ctx: SyncServiceContext,
   locations: ReturnType<typeof resolveSyncLocations>,
@@ -1401,42 +1432,70 @@ async function runStartup(
   const branch = await resolveBranch(ctx, config, repoRoot);
   log.debug('Resolved branch', { branch });
 
+  const head = await getHeadHash(ctx.$, repoRoot);
+  const state = await loadState(locations);
   const dirty = await hasLocalChanges(ctx.$, repoRoot);
   if (dirty) {
-    log.warn('Uncommitted changes detected', { repoRoot });
-    await showToast(
-      ctx.client,
-      `Uncommitted changes detected. Run /sync-resolve to auto-fix, or manually resolve in: ${repoRoot}`,
-      'warning'
-    );
-    return;
+    log.warn('Uncommitted changes detected, attempting auto-commit', { repoRoot });
+    try {
+      const date = new Date().toISOString().slice(0, 10).replace(/-/g, '.');
+      await commitAll(ctx.$, repoRoot, `Sync opencode config (${date})`);
+      const branch = await resolveBranch(ctx, config, repoRoot);
+      const commitHead = await getHeadHash(ctx.$, repoRoot);
+      // EN: Background push — don't block startup waiting for GitHub
+      // RU: Фоновый push — не ждём GitHub, не блокируем стартап
+      pushBranch(ctx.$, repoRoot, branch).catch((err) =>
+        log.warn('Background push failed', { error: formatError(err) })
+      );
+      await updateState(locations, {
+        lastPush: new Date().toISOString(),
+        lastHead: commitHead ?? undefined,
+      });
+      log.info('Auto-committed and pushed pending changes');
+      await showToast(ctx.client, 'Pending changes committed and pushed', 'info');
+    } catch (error) {
+      log.warn('Could not auto-commit pending changes', { error: formatError(error) });
+      await showToast(
+        ctx.client,
+        `Uncommitted changes detected. Run /sync-resolve to auto-fix, or manually resolve in: ${repoRoot}`,
+        'warning'
+      );
+      return;
+    }
   }
 
-  const update = await fetchAndFastForward(ctx.$, repoRoot, branch);
-  if (update.updated) {
-    log.info('Pulled remote changes', { branch });
-    const overrides = await loadOverrides(locations);
-    const plan = buildSyncPlan(config, locations, repoRoot);
-    await syncRepoToLocal(plan, overrides);
-    await options.runSecretsPullIfConfigured(config);
+  const shouldFetch = !head || head !== state.lastHead || dirty;
+  if (shouldFetch) {
+    const update = await fetchAndFastForward(ctx.$, repoRoot, branch);
+    if (update.updated) {
+      log.info('Pulled remote changes', { branch });
+      const overrides = await loadOverrides(locations);
+      const plan = buildSyncPlan(config, locations, repoRoot);
+      await syncRepoToLocal(plan, overrides);
+      await options.runSecretsPullIfConfigured(config);
 
-    if (config.includeSessions && !isTursoSessionBackend(config)) {
-      const sessionDbPath = path.join(locations.xdg.dataDir, 'opencode', 'opencode.db');
-      const sessionsDir = path.join(repoRoot, 'data', 'sessions');
-      const result = await syncSessions(sessionDbPath, sessionsDir);
-      log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
+      if (config.includeSessions && !isTursoSessionBackend(config)) {
+        const sessionDbPath = path.join(locations.xdg.dataDir, 'opencode', 'opencode.db');
+        const sessionsDir = path.join(repoRoot, 'data', 'sessions');
+        const result = await syncSessions(sessionDbPath, sessionsDir);
+        log.info(`Session sync result: ${result.total} total, ${result.merged} merged`);
+      }
+
+      if (config.includeProjects) {
+        syncGlobalData(
+          resolveProjectsFilePath(),
+          path.join(repoRoot, 'data', 'opencode.global.dat')
+        );
+      }
+
+      await updateState(locations, {
+        lastPull: new Date().toISOString(),
+        lastRemoteUpdate: new Date().toISOString(),
+        lastHead: head ?? undefined,
+      });
+      await showToast(ctx.client, 'Config updated. Restart opencode to apply.', 'info');
+      return;
     }
-
-    if (config.includeProjects) {
-      syncGlobalData(resolveProjectsFilePath(), path.join(repoRoot, 'data', 'opencode.global.dat'));
-    }
-
-    await updateState(locations, {
-      lastPull: new Date().toISOString(),
-      lastRemoteUpdate: new Date().toISOString(),
-    });
-    await showToast(ctx.client, 'Config updated. Restart opencode to apply.', 'info');
-    return;
   }
 
   const overrides = await loadOverrides(locations);
@@ -1463,12 +1522,15 @@ async function runStartup(
     return;
   }
 
-  const message = await generateCommitMessage({ client: ctx.client, $: ctx.$ }, repoRoot);
+  const now = new Date();
+  const message = `Sync opencode config (${now.toISOString().slice(0, 10)})`;
   log.info('Pushing local changes', { message });
   await commitAll(ctx.$, repoRoot, message);
   await pushBranch(ctx.$, repoRoot, branch);
+  const newHead = await getHeadHash(ctx.$, repoRoot);
   await updateState(locations, {
     lastPush: new Date().toISOString(),
+    lastHead: newHead ?? undefined,
   });
 }
 
@@ -1669,11 +1731,21 @@ async function analyzeAndDecideResolution(
       if (sessionId) {
         try {
           await ctx.client.session.delete({ path: { id: sessionId } });
-        } catch {}
+        } catch {
+          // Session deletion is best-effort cleanup
+        }
       }
     }
   } catch (error) {
-    console.error('[ERROR] AI resolution analysis failed:', error);
+    ctx.client.app
+      .log({
+        body: {
+          service: 'opencode-synced',
+          level: 'error',
+          message: `AI resolution analysis failed: ${formatError(error)}`,
+        },
+      })
+      .catch(() => {});
     return { action: 'manual', reason: `Error analyzing changes: ${formatError(error)}` };
   }
 }

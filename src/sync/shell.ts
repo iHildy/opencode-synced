@@ -1,19 +1,25 @@
-import { execSync } from 'node:child_process';
+import { exec } from 'node:child_process';
 
-export interface ShellProcessPromise extends Promise<{ exitCode: number; stdout: string; stderr: string }> {
+export interface ShellProcessPromise
+  extends Promise<{ exitCode: number; stdout: string; stderr: string }> {
   quiet(): this;
   text(): Promise<string>;
 }
 
 export type ShellFn = (strings: TemplateStringsArray, ...values: unknown[]) => ShellProcessPromise;
 
+// EN: Build shell command string — wraps all interpolated values in double quotes
+// EN: Prevents path/commit-message breakage on Windows (spaces in paths, etc.)
+// RU: Сборка команды — все интерполированные значения оборачиваются в двойные кавычки
+// RU: Предотвращает поломку путей/commit message на Windows (пробелы в путях, и т.д.)
 function buildCommand(strings: TemplateStringsArray, ...values: unknown[]): string {
   let cmd = '';
   for (let i = 0; i < strings.length; i++) {
     cmd += strings[i];
     if (i < values.length) {
       const v = values[i];
-      cmd += typeof v === 'string' ? v : String(v);
+      const str = typeof v === 'string' ? v : String(v);
+      cmd += `"${str.replace(/"/g, '\\"')}"`;
     }
   }
   return cmd.trim();
@@ -24,36 +30,48 @@ export function createNodeShell(): ShellFn {
     const command = buildCommand(strings, ...values);
     let isQuiet = false;
 
-    const run = (): { exitCode: number; stdout: string; stderr: string } => {
-      try {
-        const stdout = execSync(command, { encoding: 'utf-8', stdio: isQuiet ? 'pipe' : 'inherit' });
-        return { exitCode: 0, stdout: stdout ?? '', stderr: '' };
-      } catch (error) {
-        if (error instanceof Error && 'stdout' in error && 'stderr' in error) {
-          const execError = error as Error & { stdout: string; stderr: string; status?: number };
-          return {
-            exitCode: execError.status ?? 1,
-            stdout: execError.stdout ?? '',
-            stderr: execError.stderr ?? '',
-          };
+    const run = (): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
+      return new Promise((resolve) => {
+        const child = exec(
+          command,
+          { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
+          (error, stdout, stderr) => {
+            if (error) {
+              resolve({
+                exitCode: error.code ?? 1,
+                stdout: stdout ?? '',
+                stderr: stderr ?? '',
+              });
+            } else {
+              resolve({ exitCode: 0, stdout: stdout ?? '', stderr: '' });
+            }
+          }
+        );
+        if (!isQuiet) {
+          child.stdout?.pipe(process.stdout);
+          child.stderr?.pipe(process.stderr);
         }
-        throw error;
-      }
+      });
     };
 
     let promise: Promise<{ exitCode: number; stdout: string; stderr: string }> | null = null;
     const getPromise = (): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
       if (!promise) {
-        promise = new Promise((resolve) => {
-          resolve(run());
-        });
+        promise = run();
       }
       return promise;
     };
 
     const shellPromise = {
+      // biome-ignore lint/suspicious/noThenProperty: thenable pattern for async shell execution
       then<TResult1 = { exitCode: number; stdout: string; stderr: string }, TResult2 = never>(
-        onfulfilled?: ((value: { exitCode: number; stdout: string; stderr: string }) => TResult1 | PromiseLike<TResult1>) | null,
+        onfulfilled?:
+          | ((value: {
+              exitCode: number;
+              stdout: string;
+              stderr: string;
+            }) => TResult1 | PromiseLike<TResult1>)
+          | null,
         onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
       ): Promise<TResult1 | TResult2> {
         return getPromise().then(onfulfilled, onrejected);
@@ -63,7 +81,9 @@ export function createNodeShell(): ShellFn {
       ): Promise<{ exitCode: number; stdout: string; stderr: string } | TResult> {
         return getPromise().catch(onrejected);
       },
-      finally(onfinally?: (() => void) | null): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+      finally(
+        onfinally?: (() => void) | null
+      ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
         return getPromise().finally(onfinally);
       },
       get [Symbol.toStringTag]() {
@@ -71,7 +91,7 @@ export function createNodeShell(): ShellFn {
       },
       quiet(): ShellProcessPromise {
         isQuiet = true;
-        return shellPromise as unknown as ShellProcessPromise;
+        return this as unknown as ShellProcessPromise;
       },
       text(): Promise<string> {
         return getPromise().then((r) => r.stdout);

@@ -82,59 +82,60 @@
 - Session DB: `C:\Users\Aleks\.local\share\opencode\opencode.db` (SQLite)
 - Desktop projects store: `%APPDATA%\ai.opencode.desktop\opencode.global.dat`
 
-## FORK PLAN — 6 Phases
+## Build Output Notes
 
-### Phase 0 ✅ DONE
-- [x] Clone latest `main` from `github.com/iHildy/opencode-synced` (commit a627673)
-- [x] Fix `package.json`: `@opencode-ai/plugin` → local `file:` reference in devDependencies
-- [x] `npm install`, `npx tsc -p tsconfig.build.json` — build passes
-- [ ] ~~`bun test`~~ → use `npx vitest run` (no bun on Windows)
+- **compact JSON**: All session files use `JSON.stringify(session)` without `null, 2` (pretty-print). This saves ~30% disk space and reduces git diff noise. Reading both formats is supported (single-session and old columnar).
+- **Broken JSON recovery**: If a session JSON file can't be parsed, a `.broken` backup is created before returning null (prevents total data loss).
 
-### Phase 1: path.ts — XDG on all platforms (remove win32 APPDATA)
-**Files**: `src/sync/paths.ts`, `src/sync/paths.test.ts`
-1. Remove `if (platform === 'win32')` block with `env.APPDATA`/`env.LOCALAPPDATA`
-2. `dataDir` = `env.XDG_DATA_HOME ?? path.join(home, '.local', 'share')`
-3. `configDir` = `env.XDG_CONFIG_HOME ?? path.join(home, '.config')`
-4. Fix `env.opencode_config_dir` → `env.OPENCODE_CONFIG_DIR`
-5. Update tests for Windows expectations (no more `%APPDATA%`)
+## Cross-Platform (Windows / Linux / macOS)
 
-### Phase 2: Notifications — toasts + logs on key lifecycle points
-**Files**: `src/sync/utils.ts`, `src/sync/service.ts`
-1. Add `notify(client, { emoji, title, message, variant })` — unified entry point
-2. `runStartup()` → `"🔄 Sync starting…"`, `"✅ opencode-synced ready"`
-3. `pull()` → `"📥 Pulling…"`, `"📥 Pull complete — X changes"`
-4. `push()` → `"📤 Pushing…"`, `"📤 Push successful"`
-5. `link()` → `"🔗 Linking…"`, `"🔗 Linked to {repo}"`
-6. `syncSessions()` → `"💾 Syncing sessions…"`, result summary
-7. Errors → `"❌ {message}"` with variant='error'
+- `platformJoin(platform, ...parts)` in `paths.ts` — uses `path.posix.join` or `path.win32.join` based on `platform` parameter
+- `expandHome()` and `normalizePath()` — always produce forward slashes, backslashes normalized before comparison
+- All `buildSyncPlan`/`resolveXdgPaths`/`resolveSyncLocations` tests pass on Windows (79/79)
 
-### Phase 3: Session sync — union-merge per record
-**New file**: `src/sync/session-merge.ts`
-**Edit**: `src/sync/session-db.ts`, `src/sync/service.ts`
+## Project State (23.05.2026)
 
-**Problem**: Current `exportSessions` / `importSessions` use `skip-if-exists` — updated sessions are never re-synced.
-**Solution**: Replace with `syncSessions(localDB, remoteDir)`:
-1. Read ALL sessions from local SQLite → `Map<id, Session>`
-2. Read ALL session .json files from repo → `Map<id, Session>`
-3. For each unique id: `merge(local, remote)` per record:
-   - session meta: newer `time_updated` wins
-   - messages: union by `message.id`, each picks max `time_updated`
-   - parts: union by `part.id` nested in messages
-   - todos, session_messages, shares: union by id
-4. Write merged to both sides (SQLite + .json)
-5. Called both on pull (after fetchAndFastForward) and push (before syncLocalToRepo)
+### Done
+- XDG paths on all platforms (no %APPDATA%)
+- Notifications (toasts + logs) on key lifecycle points
+- Session sync: union-merge per record (session-db.ts, session-merge.ts)
+- Projects sync: opencode.global.dat merge (projects-merge.ts)
+- Auto-commit pending changes on startup instead of bailing out
+- Removed AI commit message generation → date-based messages
+- `createNodeShell()`: async `exec` instead of `execSync`, proper arg quoting
+- CONFIG_DIRS includes `'plugins'` and `'commands'` for Desktop compatibility
+- HEAD cache skip: если HEAD не изменился и нет локальных изменений — пропускаем git fetch (экономия сети)
+- skipIfBusy: file-based exclusive lock предотвращает конкурентные sync
+- Дебаунс: startup sync обёрнут в skipIfBusy
+- Двуязычные комментарии EN/RU в ключевых модулях
+- Двуязычные `description` в 14 `.md` командах
+- `parseFrontmatter()` — BOM + CRLF + fallback first-line fix
+- `platformJoin()` helper для кроссплатформенных тестов
+- `expandHome()` — всегда forward slashes (не `path.join`)
+- Все 79 тестов проходят на Windows (0 known failures)
+- `asSQLValue()` — обёртка всех SQLite-параметров
+- `INSERT OR REPLACE` вместо DELETE+INSERT
+- Пропуск `writeSessionsToDB` при пустой remote-директории
+- `readSessionsFromDir` — поддержка старого колоночного формата JSON
+- Убрано копирование `opencode.db` и `storage/` из sync plan (сессии → syncSessions)
 
-### Phase 4: includeProjects — sync opencode.global.dat
-**Files**: `src/sync/config.ts`, `src/sync/service.ts`
-1. Add `includeProjects: boolean = false` config field
-2. Read `opencode.global.dat` from Desktop AppData
-3. Copy to `data/opencode.global.dat` in repo on push
-4. Copy from repo on pull
-5. Warn: Desktop restart required to apply projects
+### Session Sync Optimizations
+1. **Compact JSON** — `JSON.stringify(session)` без `null, 2` (экономия ~30%)
+2. **WAL checkpoint один раз** — вынесен из `openDB()` в `syncSessions()`, однакратно за цикл
+3. **Background git push** — `pushBranch(...).catch(...)`, не блокирует стартап
+4. **Единый DB handle** — `syncSessions()` открывает SQLite один раз, читает/пишет через handle-варианты функций
+5. **Batch DB writes** — все мержнутые сессии пишутся одним `BEGIN…COMMIT`, а не по одной
+6. **Recovery битых JSON** — перед возвратом `null` создаётся `.broken`-копия файла
 
-### Phase 5: Build, deploy, test
-1. `npx tsc -p tsconfig.build.json && copyfiles -u 1 "src/command/**/*" dist/`
-2. Copy `dist/` → `C:\Users\Aleks\.config\opencode\plugins\opencode-synced\`
+### Known Issues
+- **Лог Desktop** — кольцевой буфер ~12 строк. MCP-ошибки agentmemory/TestSprite (`prompts/list`) забивают его за ~39 секунд, вытесняя логи плагина. Не наша проблема.
+- **Worker threads** — SQLite синхронный (`node:sqlite` DatabaseSync), но с единым handle + batch уже быстро. Если понадобится — вынести в `worker_threads`.
+
+### Removed Upstream Features
+- `generateCommitMessage` (commit.ts) — LLM для commit message не используется. Сообщение = `Sync opencode config (YYYY-MM-DD)`
+- `opencode.db` исключён из sync plan (предотвращает затирание сессий при pull с другой машины). Сессии → per-session JSON merge (`syncSessions`)
+
+### Deploy
+1. `npx tsc -p tsconfig.build.json && npx copyfiles -u 1 "src/command/**/*" dist/`
+2. `robocopy dist "C:\Users\Aleks\.config\opencode\plugins\opencode-synced\dist" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP`
 3. Restart OpenCode Desktop
-4. Test `/sync-pull`, `/sync-push`, `/sync-status`
-5. Test session creation + push/pull between machines

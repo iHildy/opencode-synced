@@ -1,5 +1,5 @@
 ---
-description: Initialize opencode-synced configuration
+description: Initialize opencode-synced configuration / Инициализировать конфигурацию синхронизации
 ---
 
 You MUST call the `opencode_sync` tool with `command="init"`.

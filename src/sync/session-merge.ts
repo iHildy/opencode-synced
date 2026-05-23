@@ -1,5 +1,15 @@
-import type { Session, Message, Part, SessionMessage, Todo } from './session-db.js';
-import { readSessionsFromDB, readSessionsFromDir, writeSessionsToDB, writeSessionsToDir } from './session-db.js';
+import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import type { Message, Part, Session, Todo } from './session-db.js';
+import {
+  checkpointDB,
+  listSessionIdsFromDir,
+  listSessionIdsFromHandle,
+  readSessionFromFile,
+  readSessionFromHandle,
+  writeSessionsToHandle,
+  writeSessionToFile,
+} from './session-db.js';
 
 export interface SyncSessionResult {
   total: number;
@@ -7,6 +17,8 @@ export interface SyncSessionResult {
   conflicts: number;
 }
 
+// EN: Pick the newer record by time_updated (null treated as oldest)
+// RU: Выбор более новой записи по time_updated (null считается старым)
 function pickNewer<T extends { time_updated: string | null }>(a: T, b: T): T {
   if (!a.time_updated) return b;
   if (!b.time_updated) return a;
@@ -39,7 +51,10 @@ function unionParts(local: Part[], remote: Part[]): Part[] {
   return [...map.values()];
 }
 
-function unionById<T extends { id: string; time_updated: string | null }>(local: T[], remote: T[]): T[] {
+function unionById<T extends { id: string; time_updated: string | null }>(
+  local: T[],
+  remote: T[]
+): T[] {
   const map = new Map<string, T>();
   for (const item of local) map.set(item.id, item);
   for (const item of remote) {
@@ -63,6 +78,8 @@ function unionTodos(local: Todo[], remote: Todo[]): Todo[] {
   return [...map.values()];
 }
 
+// EN: Union-merge two session versions — picks newer session metadata + unions all relations by id
+// RU: Union-merge двух версий сессии — берёт новую мету, объединяет все связи по id
 function merge(local: Session, remote: Session): Session {
   const localT = local.session.time_updated ?? '';
   const remoteT = remote.session.time_updated ?? '';
@@ -77,51 +94,60 @@ function merge(local: Session, remote: Session): Session {
   };
 }
 
+// EN: Stream-based session sync — opens DB once, processes sessions one-by-one, batch-writes at end
+// EN: Single DB connection eliminates per-session open/close overhead (was N+2 open/close per cycle)
+// RU: Потоковая синхронизация — одно открытие БД, обработка сессий по одной, batch-запись в конце
+// RU: Одно соединение с БД устраняет per-session накладные расходы (было N+2 open/close за цикл)
 export async function syncSessions(
   dbPath: string,
   sessionsDir: string
 ): Promise<SyncSessionResult> {
-  const localSessions = readSessionsFromDB(dbPath);
-  const remoteSessions = readSessionsFromDir(sessionsDir);
+  const remoteIds = listSessionIdsFromDir(sessionsDir);
 
-  const localMap = new Map<string, Session>();
-  for (const s of localSessions) localMap.set(s.session.id, s);
-
-  const remoteMap = new Map<string, Session>();
-  for (const s of remoteSessions) remoteMap.set(s.session.id, s);
-
-  const allIds = new Set([...localMap.keys(), ...remoteMap.keys()]);
-  const merged: Session[] = [];
-  let mergeCount = 0;
-  let conflictCount = 0;
-
-  for (const id of allIds) {
-    const local = localMap.get(id);
-    const remote = remoteMap.get(id);
-
-    if (!local) {
-      merged.push(structuredClone(remote!));
-      continue;
-    }
-    if (!remote) {
-      merged.push(structuredClone(local));
-      continue;
-    }
-
-    mergeCount++;
-    merged.push(merge(local, remote));
+  const dbExists = fs.existsSync(dbPath);
+  const db = dbExists ? new DatabaseSync(dbPath) : null;
+  if (db) {
+    checkpointDB(db);
   }
 
-  if (remoteSessions.length === 0) {
-    writeSessionsToDir(sessionsDir, merged);
-  } else {
-    writeSessionsToDB(dbPath, merged);
-    writeSessionsToDir(sessionsDir, merged);
-  }
+  try {
+    const localIds = db ? listSessionIdsFromHandle(db) : [];
+    const allIds = new Set([...localIds, ...remoteIds]);
+    let totalMerged = 0;
+    const hasRemote = remoteIds.length > 0;
+    const toWrite: Session[] = [];
 
-  return {
-    total: allIds.size,
-    merged: mergeCount,
-    conflicts: conflictCount,
-  };
+    for (const id of allIds) {
+      const local = db ? readSessionFromHandle(db, id) : null;
+      const remote = readSessionFromFile(sessionsDir, id);
+
+      let merged: Session;
+
+      if (!local) {
+        merged = structuredClone(remote as Session);
+      } else if (!remote) {
+        merged = structuredClone(local);
+      } else {
+        totalMerged++;
+        merged = merge(local, remote);
+      }
+
+      if (hasRemote && local) {
+        toWrite.push(merged);
+      }
+      writeSessionToFile(sessionsDir, merged);
+    }
+
+    if (db && toWrite.length > 0) {
+      writeSessionsToHandle(db, toWrite);
+    }
+
+    return {
+      total: allIds.size,
+      merged: totalMerged,
+      conflicts: 0,
+    };
+  } finally {
+    db?.close();
+  }
 }

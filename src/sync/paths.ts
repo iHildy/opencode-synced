@@ -52,14 +52,19 @@ const DEFAULT_SYNC_CONFIG_NAME = 'opencode-synced.jsonc';
 const DEFAULT_OVERRIDES_NAME = 'opencode-synced.overrides.jsonc';
 const DEFAULT_STATE_NAME = 'sync-state.json';
 
-const CONFIG_DIRS = ['agent', 'command', 'mode', 'tool', 'themes', 'plugin'];
-const SESSION_DIRS = ['storage/session', 'storage/message', 'storage/part', 'storage/session_diff'];
-const SESSION_DB_FILE = 'opencode.db';
+const CONFIG_DIRS = ['agent', 'command', 'commands', 'mode', 'tool', 'themes', 'plugin', 'plugins'];
 const PROMPT_STASH_FILES = ['prompt-stash.jsonl', 'prompt-history.jsonl'];
 const MODEL_FAVORITES_FILE = 'model.json';
 const SKILLS_DIR = 'skills';
 const HOME_AGENTS_DIR = '.agents';
 const GLOBAL_DAT_FILE = 'opencode.global.dat';
+
+// EN: Platform-aware path.join — when testing (platform != runtime), uses posix/win32 module
+// RU: path.join с учётом платформы — при тестах (platform != runtime) использует posix/win32 модуль
+function platformJoin(platform: NodeJS.Platform, ...parts: string[]): string {
+  if (platform === 'win32') return path.win32.join(...parts);
+  return path.posix.join(...parts);
+}
 
 export function resolveHomeDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -87,9 +92,9 @@ export function resolveXdgPaths(
     };
   }
 
-  const configDir = env.XDG_CONFIG_HOME ?? path.join(homeDir, '.config');
-  const dataDir = env.XDG_DATA_HOME ?? path.join(homeDir, '.local', 'share');
-  const stateDir = env.XDG_STATE_HOME ?? path.join(homeDir, '.local', 'state');
+  const configDir = env.XDG_CONFIG_HOME ?? platformJoin(platform, homeDir, '.config');
+  const dataDir = env.XDG_DATA_HOME ?? platformJoin(platform, homeDir, '.local', 'share');
+  const stateDir = env.XDG_STATE_HOME ?? platformJoin(platform, homeDir, '.local', 'state');
 
   return { homeDir, configDir, dataDir, stateDir };
 }
@@ -101,17 +106,17 @@ export function resolveSyncLocations(
   const xdg = resolveXdgPaths(env, platform);
   const customConfigDir = env.OPENCODE_CONFIG_DIR;
   const configRoot = customConfigDir
-    ? path.resolve(expandHome(customConfigDir, xdg.homeDir))
-    : path.join(xdg.configDir, 'opencode');
-  const dataRoot = path.join(xdg.dataDir, 'opencode');
+    ? platformJoin(platform, expandHome(customConfigDir, xdg.homeDir))
+    : platformJoin(platform, xdg.configDir, 'opencode');
+  const dataRoot = platformJoin(platform, xdg.dataDir, 'opencode');
 
   return {
     xdg,
     configRoot,
-    syncConfigPath: path.join(configRoot, DEFAULT_SYNC_CONFIG_NAME),
-    overridesPath: path.join(configRoot, DEFAULT_OVERRIDES_NAME),
-    statePath: path.join(dataRoot, DEFAULT_STATE_NAME),
-    defaultRepoDir: path.join(dataRoot, 'opencode-synced', 'repo'),
+    syncConfigPath: platformJoin(platform, configRoot, DEFAULT_SYNC_CONFIG_NAME),
+    overridesPath: platformJoin(platform, configRoot, DEFAULT_OVERRIDES_NAME),
+    statePath: platformJoin(platform, dataRoot, DEFAULT_STATE_NAME),
+    defaultRepoDir: platformJoin(platform, dataRoot, 'opencode-synced', 'repo'),
   };
 }
 
@@ -119,7 +124,7 @@ export function expandHome(inputPath: string, homeDir: string): string {
   if (!inputPath) return inputPath;
   if (!homeDir) return inputPath;
   if (inputPath === '~') return homeDir;
-  if (inputPath.startsWith('~/')) return path.join(homeDir, inputPath.slice(2));
+  if (inputPath.startsWith('~/')) return `${homeDir}/${inputPath.slice(2)}`;
   return inputPath;
 }
 
@@ -128,8 +133,9 @@ export function normalizePath(
   homeDir: string,
   platform: NodeJS.Platform = process.platform
 ): string {
-  const expanded = expandHome(inputPath, homeDir);
-  const resolved = path.resolve(expanded);
+  const pj = (...parts: string[]) => platformJoin(platform, ...parts);
+  const expanded = expandHome(inputPath, homeDir).replace(/\\/g, '/');
+  const resolved = pj(expanded);
   if (platform === 'win32') {
     return resolved.toLowerCase();
   }
@@ -167,12 +173,13 @@ export function resolveProjectsFilePath(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform
 ): string {
+  const pj = (...parts: string[]) => platformJoin(platform, ...parts);
   if (platform === 'win32') {
-    const appData = env.APPDATA ?? path.join(env.USERPROFILE ?? '', 'AppData', 'Roaming');
-    return path.join(appData, 'ai.opencode.desktop', GLOBAL_DAT_FILE);
+    const appData = env.APPDATA ?? pj(env.USERPROFILE ?? '', 'AppData', 'Roaming');
+    return pj(appData, 'ai.opencode.desktop', GLOBAL_DAT_FILE);
   }
-  const dataDir = env.XDG_DATA_HOME ?? path.join(resolveHomeDir(env, platform), '.local', 'share');
-  return path.join(dataDir, 'opencode', GLOBAL_DAT_FILE);
+  const dataDir = env.XDG_DATA_HOME ?? pj(resolveHomeDir(env, platform), '.local', 'share');
+  return pj(dataDir, 'opencode', GLOBAL_DAT_FILE);
 }
 
 export function buildSyncPlan(
@@ -181,27 +188,28 @@ export function buildSyncPlan(
   repoRoot: string,
   platform: NodeJS.Platform = process.platform
 ): SyncPlan {
+  const pj = (...parts: string[]) => platformJoin(platform, ...parts);
   const configRoot = locations.configRoot;
-  const dataRoot = path.join(locations.xdg.dataDir, 'opencode');
-  const stateRoot = path.join(locations.xdg.stateDir, 'opencode');
-  const repoConfigRoot = path.join(repoRoot, 'config');
-  const repoDataRoot = path.join(repoRoot, 'data');
-  const repoSecretsRoot = path.join(repoRoot, 'secrets');
-  const repoStateRoot = path.join(repoRoot, 'state');
-  const repoExtraDir = path.join(repoSecretsRoot, 'extra');
-  const manifestPath = path.join(repoSecretsRoot, 'extra-manifest.json');
-  const repoConfigExtraDir = path.join(repoConfigRoot, 'extra');
-  const configManifestPath = path.join(repoConfigRoot, 'extra-manifest.json');
+  const dataRoot = pj(locations.xdg.dataDir, 'opencode');
+  const stateRoot = pj(locations.xdg.stateDir, 'opencode');
+  const repoConfigRoot = pj(repoRoot, 'config');
+  const repoDataRoot = pj(repoRoot, 'data');
+  const repoSecretsRoot = pj(repoRoot, 'secrets');
+  const repoStateRoot = pj(repoRoot, 'state');
+  const repoExtraDir = pj(repoSecretsRoot, 'extra');
+  const manifestPath = pj(repoSecretsRoot, 'extra-manifest.json');
+  const repoConfigExtraDir = pj(repoConfigRoot, 'extra');
+  const configManifestPath = pj(repoConfigRoot, 'extra-manifest.json');
 
   const items: SyncItem[] = [];
   const usingSecretsBackend = hasSecretsBackend(config);
-  const authJsonPath = path.join(dataRoot, 'auth.json');
-  const mcpAuthJsonPath = path.join(dataRoot, 'mcp-auth.json');
+  const authJsonPath = pj(dataRoot, 'auth.json');
+  const mcpAuthJsonPath = pj(dataRoot, 'mcp-auth.json');
 
   const addFile = (name: string, isSecret: boolean, isConfigFile: boolean): void => {
     items.push({
-      localPath: path.join(configRoot, name),
-      repoPath: path.join(repoConfigRoot, name),
+      localPath: pj(configRoot, name),
+      repoPath: pj(repoConfigRoot, name),
       type: 'file',
       isSecret,
       isConfigFile,
@@ -215,8 +223,8 @@ export function buildSyncPlan(
 
   for (const dirName of CONFIG_DIRS) {
     items.push({
-      localPath: path.join(configRoot, dirName),
-      repoPath: path.join(repoConfigRoot, dirName),
+      localPath: pj(configRoot, dirName),
+      repoPath: pj(repoConfigRoot, dirName),
       type: 'dir',
       isSecret: false,
       isConfigFile: false,
@@ -225,8 +233,8 @@ export function buildSyncPlan(
 
   if (config.includeOpencodeSkills !== false) {
     items.push({
-      localPath: path.join(configRoot, SKILLS_DIR),
-      repoPath: path.join(repoConfigRoot, SKILLS_DIR),
+      localPath: pj(configRoot, SKILLS_DIR),
+      repoPath: pj(repoConfigRoot, SKILLS_DIR),
       type: 'dir',
       isSecret: false,
       isConfigFile: false,
@@ -235,8 +243,8 @@ export function buildSyncPlan(
 
   if (config.includeAgentsDir !== false) {
     items.push({
-      localPath: path.join(locations.xdg.homeDir, HOME_AGENTS_DIR),
-      repoPath: path.join(repoConfigRoot, HOME_AGENTS_DIR),
+      localPath: pj(locations.xdg.homeDir, HOME_AGENTS_DIR),
+      repoPath: pj(repoConfigRoot, HOME_AGENTS_DIR),
       type: 'dir',
       isSecret: false,
       isConfigFile: false,
@@ -245,8 +253,8 @@ export function buildSyncPlan(
 
   if (config.includeModelFavorites !== false) {
     items.push({
-      localPath: path.join(stateRoot, MODEL_FAVORITES_FILE),
-      repoPath: path.join(repoStateRoot, MODEL_FAVORITES_FILE),
+      localPath: pj(stateRoot, MODEL_FAVORITES_FILE),
+      repoPath: pj(repoStateRoot, MODEL_FAVORITES_FILE),
       type: 'file',
       isSecret: false,
       isConfigFile: false,
@@ -265,7 +273,7 @@ export function buildSyncPlan(
         },
         {
           localPath: mcpAuthJsonPath,
-          repoPath: path.join(repoDataRoot, 'mcp-auth.json'),
+          repoPath: pj(repoDataRoot, 'mcp-auth.json'),
           type: 'file',
           isSecret: true,
           isConfigFile: false,
@@ -281,8 +289,8 @@ export function buildSyncPlan(
     if (config.includePromptStash) {
       for (const fileName of PROMPT_STASH_FILES) {
         items.push({
-          localPath: path.join(stateRoot, fileName),
-          repoPath: path.join(repoStateRoot, fileName),
+          localPath: pj(stateRoot, fileName),
+          repoPath: pj(repoStateRoot, fileName),
           type: 'file',
           isSecret: true,
           isConfigFile: false,
@@ -338,13 +346,14 @@ function buildExtraPathPlan(
   manifestPath: string,
   platform: NodeJS.Platform
 ): ExtraPathPlan {
+  const pj = (...parts: string[]) => platformJoin(platform, ...parts);
   const allowlist = (inputPaths ?? []).map((entry) =>
     normalizePath(entry, locations.xdg.homeDir, platform)
   );
 
   const entries = allowlist.map((sourcePath) => ({
     sourcePath,
-    repoPath: path.join(repoExtraDir, encodeExtraPath(sourcePath)),
+    repoPath: pj(repoExtraDir, encodeExtraPath(sourcePath)),
   }));
 
   return {

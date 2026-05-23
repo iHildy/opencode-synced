@@ -161,6 +161,15 @@ export async function pushBranch($: Shell, repoDir: string, branch: string): Pro
   }
 }
 
+export async function getHeadHash($: Shell, repoDir: string): Promise<string | null> {
+  try {
+    const output = await $`git -C ${repoDir} rev-parse HEAD`.quiet().text();
+    return output.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function getCurrentBranch($: Shell, repoDir: string): Promise<string> {
   try {
     const output = await $`git -C ${repoDir} rev-parse --abbrev-ref HEAD`.quiet().text();

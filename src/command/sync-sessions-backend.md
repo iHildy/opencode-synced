@@ -1,8 +1,9 @@
 ---
-description: Switch session sync backend between git and turso
+description: Switch session sync backend (git/turso) / Переключить бэкенд синхронизации сессий
 ---
 
 You MUST call the `opencode_sync` tool with `command="sessions-backend"`.
+Do not answer with plain text only.
 
 Argument handling:
 - `$ARGUMENTS` must be either `git` or `turso`.
