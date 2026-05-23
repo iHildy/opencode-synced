@@ -13,3 +13,4 @@ coverage/
 __pycache__/
 opencode-plugin-template/
 opencode-docs-*/
+package-lock.json
