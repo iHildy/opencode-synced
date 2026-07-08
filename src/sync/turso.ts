@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { NormalizedSyncConfig } from './config.js';
 import { isPlainObject, isTursoSessionBackend, pathExists, writeJsonFile } from './config.js';
 import { SyncCommandError } from './errors.js';
-import type { SyncLocations } from './paths.js';
+import { pathForLocations, type SyncLocations } from './paths.js';
 
 const SESSION_SYNC_TABLE = 'opencode_session_sync_snapshot';
 const CREDENTIAL_VERSION = 1;
@@ -560,7 +560,12 @@ export function createTursoSessionBackend(options: {
 }
 
 export function resolveTursoCredentialPath(locations: SyncLocations): string {
-  return path.join(locations.xdg.dataDir, 'opencode', 'opencode-synced', 'turso-session.json');
+  return pathForLocations(locations).join(
+    locations.xdg.dataDir,
+    'opencode',
+    'opencode-synced',
+    'turso-session.json'
+  );
 }
 
 export function resolveSessionDbPaths(locations: SyncLocations): {
@@ -568,8 +573,11 @@ export function resolveSessionDbPaths(locations: SyncLocations): {
   walPath: string;
   shmPath: string;
 } {
-  const dataRoot = path.join(locations.xdg.dataDir, 'opencode');
-  const dbPath = path.join(dataRoot, 'opencode.db');
+  const dbPath = pathForLocations(locations).join(
+    locations.xdg.dataDir,
+    'opencode',
+    'opencode.db'
+  );
   return {
     dbPath,
     walPath: `${dbPath}-wal`,
