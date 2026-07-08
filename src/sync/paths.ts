@@ -143,7 +143,7 @@ export function expandHome(
   if (!inputPath) return inputPath;
   if (!homeDir) return inputPath;
   if (inputPath === '~') return homeDir;
-  if (inputPath.startsWith('~/')) return pathForPlatform(platform).join(homeDir, inputPath.slice(2));
+  if (inputPath.startsWith('~/') || inputPath.startsWith('~\\')) return pathForPlatform(platform).join(homeDir, inputPath.slice(2));
   return inputPath;
 }
 
