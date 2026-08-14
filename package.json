@@ -1,7 +1,7 @@
 {
-  "name": "opencode-synced",
-  "version": "0.9.0",
-  "description": "Sync global opencode config across machines via GitHub.",
+  "name": "@tsunamik/opencode-synced",
+  "version": "0.10.0-beta.1",
+  "description": "Hardened OpenCode config and state sync across trusted machines.",
   "author": {
     "name": "Ian Hildebrand"
   },
@@ -17,14 +17,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/iHildy/opencode-synced.git"
+    "url": "git+https://github.com/tsunamik/opencode-synced.git"
   },
   "publishConfig": {
     "access": "public"
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist", "docs"],
   "dependencies": {
     "@opencode-ai/plugin": "1.0.85"
   },
@@ -41,7 +39,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -r src/command dist/command",
-    "prepack": "bun run build",
+    "prepack": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome lint .",
@@ -51,8 +49,6 @@
     "prepare": "husky"
   },
   "lint-staged": {
-    "*.{js,ts,json}": [
-      "biome check --write --no-errors-on-unmatched"
-    ]
+    "*.{js,ts,json}": ["biome check --write --no-errors-on-unmatched"]
   }
 }

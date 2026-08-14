@@ -24,7 +24,7 @@ jobs:
       requested_tag: ${{ steps.publish.outputs.requested_tag }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - uses: jdx/mise-action@d6e32c1796099e0f1f3ac741c220a8b7eae9e5dd
         with:
@@ -39,15 +39,21 @@ jobs:
         run: mise run build
 
       - id: inputs
-        uses: simenandre/setup-inputs@v1
+        uses: simenandre/setup-inputs@00a2f5d3135898b400343ff87d99b7841e6e4592
 
       - name: Publish candidate to npm with OIDC
         id: publish
+        env:
+          REQUESTED_TAG: ${{ steps.inputs.outputs.tag }}
         run: |
-          TAG="${{ steps.inputs.outputs.tag }}"
+          TAG="$REQUESTED_TAG"
           if [ -z "$TAG" ]; then
             TAG="latest"
           fi
+          case "$TAG" in
+            latest|next) ;;
+            *) echo "Unsupported npm tag"; exit 1 ;;
+          esac
 
           echo "requested_tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -58,7 +64,7 @@ jobs:
       - name: Resolve published version
         id: version
         run: |
-          VERSION=$(npm view opencode-synced@next version)
+          VERSION=$(npm view @tsunamik/opencode-synced@next version)
           if [ -z "$VERSION" ]; then
             echo "Failed to resolve version from npm tag: next"
             exit 1
@@ -80,7 +86,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - uses: jdx/mise-action@d6e32c1796099e0f1f3ac741c220a8b7eae9e5dd
         with:
@@ -96,5 +102,5 @@ jobs:
             exit 1
           fi
 
-          echo "Promoting opencode-synced@$VERSION to latest"
-          npm dist-tag add "opencode-synced@$VERSION" latest
+          echo "Promoting @tsunamik/opencode-synced@$VERSION to latest"
+          npm dist-tag add "@tsunamik/opencode-synced@$VERSION" latest

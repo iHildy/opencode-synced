@@ -5,7 +5,9 @@ export interface McpSecretExtraction {
   secretOverrides: Record<string, unknown>;
 }
 
-const ENV_PLACEHOLDER_PATTERN = /\{env:[^}]+\}/i;
+const SAFE_REFERENCE_PATTERN = /^(?:[A-Za-z][A-Za-z0-9+.-]*\s+)?\{(?:env|file):[^{}]+\}$/i;
+const SENSITIVE_KEY_PATTERN =
+  /(?:api[_-]?key|token|access[_-]?token|secret|client[_-]?secret|password|authorization|cookie)$/i;
 
 export function extractMcpSecrets(config: Record<string, unknown>): McpSecretExtraction {
   const sanitizedConfig = cloneConfig(config);
@@ -46,7 +48,36 @@ export function extractMcpSecrets(config: Record<string, unknown>): McpSecretExt
 }
 
 function isSecretString(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && !ENV_PLACEHOLDER_PATTERN.test(value);
+  return typeof value === 'string' && value.length > 0 && !SAFE_REFERENCE_PATTERN.test(value);
+}
+
+export function assertNoLiteralSecrets(config: Record<string, unknown>): void {
+  visitSecretCandidates(config, []);
+}
+
+function visitSecretCandidates(value: unknown, pathTokens: string[]): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      visitSecretCandidates(entry, [...pathTokens, String(index)]);
+    });
+    return;
+  }
+  if (!isPlainObject(value)) return;
+
+  for (const [key, entry] of Object.entries(value)) {
+    const nextPath = [...pathTokens, key];
+    if (
+      typeof entry === 'string' &&
+      entry.length > 0 &&
+      SENSITIVE_KEY_PATTERN.test(key) &&
+      !SAFE_REFERENCE_PATTERN.test(entry)
+    ) {
+      throw new Error(
+        `Literal secret-like value must use an env/file reference: ${nextPath.join('.')}`
+      );
+    }
+    visitSecretCandidates(entry, nextPath);
+  }
 }
 
 function buildHeaderEnvVar(serverName: string, headerName: string): string {

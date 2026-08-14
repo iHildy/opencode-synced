@@ -117,35 +117,36 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
     description: 'Manage opencode config sync with a GitHub repo',
     args: {
       command: tool.schema
-        .enum(['status', 'init', 'link', 'pull', 'push', 'enable-secrets', 'resolve'])
+        .enum(['status', 'init', 'link', 'pull', 'push'])
         .describe('Sync command to execute'),
       repo: tool.schema.string().optional().describe('Repo owner/name or URL'),
       owner: tool.schema.string().optional().describe('Repo owner'),
       name: tool.schema.string().optional().describe('Repo name'),
       url: tool.schema.string().optional().describe('Repo URL'),
       branch: tool.schema.string().optional().describe('Repo branch'),
-      includeSecrets: tool.schema.boolean().optional().describe('Enable secrets sync'),
-      includeMcpSecrets: tool.schema
+      includeSkills: tool.schema.boolean().optional().describe('Sync global OpenCode skills'),
+      includePromptHistory: tool.schema
         .boolean()
         .optional()
-        .describe('Allow MCP secrets to be committed (requires includeSecrets)'),
-      includeSessions: tool.schema
-        .boolean()
-        .optional()
-        .describe('Enable session sync (requires includeSecrets)'),
+        .describe('Sync plaintext prompt history in a private repository'),
       includePromptStash: tool.schema
         .boolean()
         .optional()
-        .describe('Enable prompt stash/history sync (requires includeSecrets)'),
+        .describe('Sync plaintext prompt stash in a private repository'),
       includeModelFavorites: tool.schema
         .boolean()
         .optional()
-        .describe('Sync model favorites (state/model.json)'),
+        .describe('Sync only the favorite projection from state/model.json'),
+      includeModelSelectors: tool.schema
+        .boolean()
+        .optional()
+        .describe('Sync main-model.txt and cheap-model.txt'),
+      acknowledgePlaintextPromptRisk: tool.schema
+        .boolean()
+        .optional()
+        .describe('Required acknowledgement when prompt synchronization is enabled'),
       create: tool.schema.boolean().optional().describe('Create repo if missing'),
       private: tool.schema.boolean().optional().describe('Create repo as private'),
-      extraSecretPaths: tool.schema.array(tool.schema.string()).optional(),
-      extraConfigPaths: tool.schema.array(tool.schema.string()).optional(),
-      localRepoPath: tool.schema.string().optional().describe('Override local repo path'),
     },
     async execute(args) {
       try {
@@ -159,21 +160,25 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
             name: args.name,
             url: args.url,
             branch: args.branch,
-            includeSecrets: args.includeSecrets,
-            includeMcpSecrets: args.includeMcpSecrets,
-            includeSessions: args.includeSessions,
+            includeSkills: args.includeSkills,
+            includePromptHistory: args.includePromptHistory,
             includePromptStash: args.includePromptStash,
             includeModelFavorites: args.includeModelFavorites,
+            includeModelSelectors: args.includeModelSelectors,
+            acknowledgePlaintextPromptRisk: args.acknowledgePlaintextPromptRisk,
             create: args.create,
             private: args.private,
-            extraSecretPaths: args.extraSecretPaths,
-            extraConfigPaths: args.extraConfigPaths,
-            localRepoPath: args.localRepoPath,
           });
         }
         if (args.command === 'link') {
           return await service.link({
             repo: args.repo ?? args.name,
+            includeSkills: args.includeSkills,
+            includePromptHistory: args.includePromptHistory,
+            includePromptStash: args.includePromptStash,
+            includeModelFavorites: args.includeModelFavorites,
+            includeModelSelectors: args.includeModelSelectors,
+            acknowledgePlaintextPromptRisk: args.acknowledgePlaintextPromptRisk,
           });
         }
         if (args.command === 'pull') {
@@ -182,16 +187,6 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
         if (args.command === 'push') {
           return await service.push();
         }
-        if (args.command === 'enable-secrets') {
-          return await service.enableSecrets({
-            extraSecretPaths: args.extraSecretPaths,
-            includeMcpSecrets: args.includeMcpSecrets,
-          });
-        }
-        if (args.command === 'resolve') {
-          return await service.resolve();
-        }
-
         return 'Unknown command.';
       } catch (error) {
         if (error instanceof SyncConfigMissingError || error instanceof SyncCommandError) {
@@ -202,10 +197,8 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
     },
   });
 
-  // Delay startup sync slightly to ensure TUI is connected
-  setTimeout(() => {
-    void service.startupSync();
-  }, 1000);
+  // Import prompt/model state before OpenCode mounts in-memory TUI stores.
+  await service.startupSync();
 
   return {
     tool: {

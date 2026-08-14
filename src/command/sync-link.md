@@ -12,4 +12,6 @@ If no repo name is provided, the tool will automatically search for common sync 
 
 After linking:
 - Remind the user to restart opencode to apply the synced config
-- If they want to enable secrets sync, they should run /sync-enable-secrets
+- Use the same includeSkills, prompt, favorites, and model-selector flags as the first machine
+- Prompt flags require acknowledgePlaintextPromptRisk=true and a private repository
+- Secrets, sessions, arbitrary extra paths, overrides, and sync configuration stay local

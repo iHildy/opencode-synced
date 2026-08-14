@@ -26,6 +26,16 @@ describe('resolveXdgPaths', () => {
 });
 
 describe('resolveSyncLocations', () => {
+  it('respects the OpenCode uppercase config directory flag', () => {
+    const env = {
+      HOME: '/home/test',
+      OPENCODE_CONFIG_DIR: '/official/opencode',
+    } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+
+    expect(locations.configRoot).toBe('/official/opencode');
+  });
+
   it('respects opencode_config_dir', () => {
     const env = {
       HOME: '/home/test',
@@ -40,25 +50,40 @@ describe('resolveSyncLocations', () => {
 });
 
 describe('buildSyncPlan', () => {
-  it('excludes secrets when includeSecrets is false', () => {
+  it('tracks redirected XDG roots instead of assuming everything is under HOME', () => {
+    const env = {
+      HOME: '/home/test',
+      XDG_CONFIG_HOME: '/mnt/config',
+      XDG_STATE_HOME: '/mnt/state',
+    } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const plan = buildSyncPlan(
+      { repo: { owner: 'acme', name: 'config' }, includeModelFavorites: true },
+      locations,
+      '/repo',
+      'linux'
+    );
+
+    expect(plan.localRoots).toEqual(['/mnt/config/opencode', '/mnt/state/opencode']);
+  });
+
+  it('excludes secrets and arbitrary extra paths', () => {
     const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');
     const config: SyncConfig = {
       repo: { owner: 'acme', name: 'config' },
       includeSecrets: false,
-      extraSecretPaths: ['/home/test/.ssh/id_rsa'],
-      extraConfigPaths: ['/home/test/.config/opencode/custom.json'],
+      extraSecretPaths: [],
+      extraConfigPaths: [],
     };
 
     const plan = buildSyncPlan(config, locations, '/repo', 'linux');
     const secretItems = plan.items.filter((item) => item.isSecret);
 
     expect(secretItems.length).toBe(0);
-    expect(plan.extraSecrets.allowlist.length).toBe(0);
-    expect(plan.extraConfigs.allowlist.length).toBe(1);
   });
 
-  it('includes secrets when includeSecrets is true', () => {
+  it('rejects secrets and arbitrary extra paths', () => {
     const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');
     const config: SyncConfig = {
@@ -68,12 +93,9 @@ describe('buildSyncPlan', () => {
       extraConfigPaths: ['/home/test/.config/opencode/custom.json'],
     };
 
-    const plan = buildSyncPlan(config, locations, '/repo', 'linux');
-    const secretItems = plan.items.filter((item) => item.isSecret);
-
-    expect(secretItems.length).toBe(2);
-    expect(plan.extraSecrets.allowlist.length).toBe(1);
-    expect(plan.extraConfigs.allowlist.length).toBe(1);
+    expect(() => buildSyncPlan(config, locations, '/repo', 'linux')).toThrow(
+      'not supported by this fork'
+    );
   });
 
   it('includes model favorites by default and allows disabling', () => {
@@ -102,5 +124,99 @@ describe('buildSyncPlan', () => {
     );
 
     expect(disabledItem).toBeUndefined();
+  });
+
+  it('adds skills only when explicitly enabled', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const base: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+    };
+
+    const disabled = buildSyncPlan(base, locations, '/repo', 'linux');
+    expect(disabled.items.some((item) => item.localPath.endsWith('/skills'))).toBe(false);
+
+    const enabled = buildSyncPlan({ ...base, includeSkills: true }, locations, '/repo', 'linux');
+    const skills = enabled.items.find((item) => item.localPath.endsWith('/skills'));
+
+    expect(skills).toMatchObject({
+      repoPath: '/repo/config/skills',
+      type: 'dir',
+      strategy: 'skills',
+    });
+  });
+
+  it('adds prompt snapshots independently of auth secrets', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      includePromptHistory: true,
+      includePromptStash: true,
+      acknowledgePlaintextPromptRisk: true,
+    };
+
+    const plan = buildSyncPlan(config, locations, '/repo', 'linux');
+    const promptItems = plan.items.filter((item) => item.strategy === 'prompt-snapshot');
+
+    expect(promptItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          localPath: '/home/test/.local/state/opencode/prompt-history.jsonl',
+          repoPath: '/repo/state/prompts/prompt-history.jsonl',
+          isSecret: true,
+        }),
+        expect.objectContaining({
+          localPath: '/home/test/.local/state/opencode/prompt-stash.jsonl',
+          repoPath: '/repo/state/prompts/prompt-stash.jsonl',
+          isSecret: true,
+        }),
+      ])
+    );
+
+    expect(plan.items.some((item) => item.localPath.endsWith('/auth.json'))).toBe(false);
+    expect(plan.items.some((item) => item.localPath.endsWith('/mcp-auth.json'))).toBe(false);
+  });
+
+  it('adds portable model selector files when enabled', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeModelSelectors: true,
+    };
+
+    const plan = buildSyncPlan(config, locations, '/repo', 'linux');
+    const selectors = plan.items.filter((item) => item.strategy === 'model-selector');
+
+    expect(selectors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          localPath: '/home/test/.config/opencode/main-model.txt',
+          repoPath: '/repo/state/model-selectors/main-model.txt',
+        }),
+        expect.objectContaining({
+          localPath: '/home/test/.config/opencode/cheap-model.txt',
+          repoPath: '/repo/state/model-selectors/cheap-model.txt',
+        }),
+      ])
+    );
+  });
+
+  it('marks model favorites for projection instead of raw file replacement', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const plan = buildSyncPlan(
+      { repo: { owner: 'acme', name: 'config' }, includeModelFavorites: true },
+      locations,
+      '/repo',
+      'linux'
+    );
+
+    const favorites = plan.items.find((item) => item.localPath.endsWith('/model.json'));
+    expect(favorites?.strategy).toBe('model-favorites');
+    expect(favorites?.repoPath).toBe('/repo/state/model-favorites.json');
   });
 });

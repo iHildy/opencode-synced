@@ -7,8 +7,6 @@ The repo will be created automatically if it doesn't exist (private by default).
 Default repo name is "my-opencode-config" with owner auto-detected from GitHub CLI.
 If the user wants a custom repo name, pass name="custom-name".
 If the user wants an org-owned repo, pass owner="org-name".
-If the user wants a public repo, pass private=false.
-Include includeSecrets if the user explicitly opts in.
-Include includeMcpSecrets only if they want MCP secrets committed to a private repo.
-If the user supplies extra config paths, pass extraConfigPaths.
-Model favorites sync is enabled by default; set includeModelFavorites=false to disable.
+Pass includeSkills, includeModelFavorites, and includeModelSelectors for portable state.
+Prompt history and stash require a private repo plus acknowledgePlaintextPromptRisk=true.
+Secrets, sessions, arbitrary extra paths, overrides, and sync configuration are never synced.

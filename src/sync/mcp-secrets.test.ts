@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { extractMcpSecrets } from './mcp-secrets.js';
+import { assertNoLiteralSecrets, extractMcpSecrets } from './mcp-secrets.js';
 
 describe('extractMcpSecrets', () => {
   it('moves MCP header secrets into overrides and adds env placeholders', () => {
@@ -47,6 +47,23 @@ describe('extractMcpSecrets', () => {
         context7: {
           headers: {
             CONTEXT7_API_KEY: '{env:CONTEXT7_API_KEY}',
+          },
+        },
+      },
+    };
+
+    const { sanitizedConfig, secretOverrides } = extractMcpSecrets(input);
+
+    expect(secretOverrides).toEqual({});
+    expect(sanitizedConfig).toEqual(input);
+  });
+
+  it('leaves file placeholders intact and skips overrides', () => {
+    const input = {
+      mcp: {
+        context7: {
+          headers: {
+            CONTEXT7_API_KEY: '{file:~/.config/opencode/secrets/context7}',
           },
         },
       },
@@ -125,5 +142,38 @@ describe('extractMcpSecrets', () => {
         },
       },
     });
+  });
+});
+
+describe('assertNoLiteralSecrets', () => {
+  it('allows environment and file references', () => {
+    expect(() =>
+      assertNoLiteralSecrets({
+        provider: { demo: { options: { apiKey: '{env:DEMO_API_KEY}' } } },
+        mcp: { demo: { environment: { DEMO_TOKEN: '{file:/private/demo-token}' } } },
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects literal provider and MCP environment credentials without exposing values', () => {
+    expect(() =>
+      assertNoLiteralSecrets({
+        provider: { demo: { options: { apiKey: 'literal-provider-key' } } },
+      })
+    ).toThrow('provider.demo.options.apiKey');
+    expect(() =>
+      assertNoLiteralSecrets({ mcp: { demo: { environment: { DEMO_TOKEN: 'literal-token' } } } })
+    ).toThrow('mcp.demo.environment.DEMO_TOKEN');
+  });
+
+  it('rejects literal text surrounding an embedded reference', () => {
+    expect(() =>
+      assertNoLiteralSecrets({ provider: { demo: { options: { apiKey: '{env:DECOY} leaked' } } } })
+    ).toThrow('provider.demo.options.apiKey');
+    expect(() =>
+      assertNoLiteralSecrets({
+        mcp: { demo: { headers: { Authorization: 'Bearer {env:TOKEN} leaked' } } },
+      })
+    ).toThrow('mcp.demo.headers.Authorization');
   });
 });

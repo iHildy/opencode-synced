@@ -1,8 +1,8 @@
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
-
 import type { PluginInput } from '@opencode-ai/plugin';
-import { syncLocalToRepo, syncRepoToLocal } from './apply.js';
-import { generateCommitMessage } from './commit.js';
+
+import { assertSafeDestination, syncLocalToRepo, syncRepoToLocal } from './apply.js';
 import {
   canCommitMcpSecrets,
   loadOverrides,
@@ -16,28 +16,26 @@ import { SyncCommandError, SyncConfigMissingError } from './errors.js';
 import type { SyncLockInfo } from './lock.js';
 import { withSyncLock } from './lock.js';
 import { buildSyncPlan, resolveRepoRoot, resolveSyncLocations } from './paths.js';
+import { applyLocalProjection, createLocalProjection } from './reconcile.js';
 import {
+  assertRestrictedRepoLayout,
   commitAll,
   ensureRepoCloned,
   ensureRepoPrivate,
   fetchAndFastForward,
+  fetchAndRebaseLocalWins,
   findSyncRepo,
   getAuthenticatedUser,
   getRepoStatus,
   hasLocalChanges,
   isRepoCloned,
   pushBranch,
+  pushPendingCommits,
   repoExists,
   resolveRepoBranch,
   resolveRepoIdentifier,
 } from './repo.js';
-import {
-  createLogger,
-  extractTextFromResponse,
-  resolveSmallModel,
-  showToast,
-  unwrapData,
-} from './utils.js';
+import { createLogger, showToast } from './utils.js';
 
 type SyncServiceContext = Pick<PluginInput, 'client' | '$'>;
 type Logger = ReturnType<typeof createLogger>;
@@ -52,8 +50,12 @@ interface InitOptions {
   includeSecrets?: boolean;
   includeMcpSecrets?: boolean;
   includeSessions?: boolean;
+  includeSkills?: boolean;
+  includePromptHistory?: boolean;
   includePromptStash?: boolean;
   includeModelFavorites?: boolean;
+  includeModelSelectors?: boolean;
+  acknowledgePlaintextPromptRisk?: boolean;
   create?: boolean;
   private?: boolean;
   extraSecretPaths?: string[];
@@ -63,6 +65,12 @@ interface InitOptions {
 
 interface LinkOptions {
   repo?: string;
+  includeSkills?: boolean;
+  includePromptHistory?: boolean;
+  includePromptStash?: boolean;
+  includeModelFavorites?: boolean;
+  includeModelSelectors?: boolean;
+  acknowledgePlaintextPromptRisk?: boolean;
 }
 
 export interface SyncService {
@@ -72,11 +80,6 @@ export interface SyncService {
   link: (_options: LinkOptions) => Promise<string>;
   pull: () => Promise<string>;
   push: () => Promise<string>;
-  enableSecrets: (_options?: {
-    extraSecretPaths?: string[];
-    includeMcpSecrets?: boolean;
-  }) => Promise<string>;
-  resolve: () => Promise<string>;
 }
 
 export function createSyncService(ctx: SyncServiceContext): SyncService {
@@ -125,26 +128,16 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         } catch (error) {
           const message = `Failed to load opencode-synced config: ${formatError(error)}`;
           log.error(message, { path: locations.syncConfigPath });
-          await showToast(
-            ctx.client,
-            `Failed to load opencode-synced config. Check ${locations.syncConfigPath} for JSON errors.`,
-            'error'
-          );
           return;
         }
         if (!config) {
-          await showToast(
-            ctx.client,
-            'Configure opencode-synced with /sync-init or link to an existing repo with /sync-link',
-            'info'
-          );
+          log.info('Sync is not configured; skipping startup sync');
           return;
         }
         try {
           await runStartup(ctx, locations, config, log);
         } catch (error) {
           log.error('Startup sync failed', { error: formatError(error) });
-          await showToast(ctx.client, formatError(error), 'error');
         }
       }),
     status: async () => {
@@ -175,10 +168,14 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
       const includeSecrets = config.includeSecrets ? 'enabled' : 'disabled';
       const includeMcpSecrets = config.includeMcpSecrets ? 'enabled' : 'disabled';
       const includeSessions = config.includeSessions ? 'enabled' : 'disabled';
+      const includeSkills = config.includeSkills ? 'enabled' : 'disabled';
+      const includePromptHistory = config.includePromptHistory ? 'enabled' : 'disabled';
       const includePromptStash = config.includePromptStash ? 'enabled' : 'disabled';
       const includeModelFavorites = config.includeModelFavorites ? 'enabled' : 'disabled';
+      const includeModelSelectors = config.includeModelSelectors ? 'enabled' : 'disabled';
       const lastPull = state.lastPull ?? 'never';
       const lastPush = state.lastPush ?? 'never';
+      const lastOutcome = state.lastOutcome ?? 'never';
 
       let changesLabel = 'clean';
       if (!cloned) {
@@ -196,10 +193,14 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         `Secrets: ${includeSecrets}`,
         `MCP secrets: ${includeMcpSecrets}`,
         `Sessions: ${includeSessions}`,
+        `Skills: ${includeSkills}`,
+        `Prompt history: ${includePromptHistory}`,
         `Prompt stash: ${includePromptStash}`,
         `Model favorites: ${includeModelFavorites}`,
+        `Model selectors: ${includeModelSelectors}`,
         `Last pull: ${lastPull}`,
         `Last push: ${lastPush}`,
+        `Last outcome: ${lastOutcome}`,
         `Working tree: ${changesLabel}`,
       ];
 
@@ -211,6 +212,9 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const repoIdentifier = resolveRepoIdentifier(config);
         const isPrivate = options.private ?? true;
+        if (!isPrivate && (config.includePromptHistory || config.includePromptStash)) {
+          throw new SyncCommandError('Prompt synchronization requires a private repository.');
+        }
 
         const exists = await repoExists(ctx.$, repoIdentifier);
         let created = false;
@@ -222,7 +226,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         await writeSyncConfig(locations, config);
         const repoRoot = resolveRepoRoot(config, locations);
         await ensureRepoCloned(ctx.$, config, repoRoot);
-        await ensureSecretsPolicy(ctx, config);
+        await assertRestrictedRepoLayout(repoRoot);
+        await ensurePrivateDataPolicy(ctx, config);
 
         if (created) {
           const overrides = await loadOverrides(locations);
@@ -237,7 +242,13 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
             const branch = resolveRepoBranch(config);
             await commitAll(ctx.$, repoRoot, 'Initial sync from opencode-synced');
             await pushBranch(ctx.$, repoRoot, branch);
-            await writeState(locations, { lastPush: new Date().toISOString() });
+            const completedAt = new Date().toISOString();
+            await writeState(locations, {
+              lastAttempt: completedAt,
+              lastCommit: completedAt,
+              lastPush: completedAt,
+              lastOutcome: 'pushed',
+            });
           }
         }
 
@@ -276,7 +287,12 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           includeSecrets: false,
           includeMcpSecrets: false,
           includeSessions: false,
-          includePromptStash: false,
+          includeSkills: options.includeSkills ?? false,
+          includePromptHistory: options.includePromptHistory ?? false,
+          includePromptStash: options.includePromptStash ?? false,
+          includeModelFavorites: options.includeModelFavorites ?? true,
+          includeModelSelectors: options.includeModelSelectors ?? false,
+          acknowledgePlaintextPromptRisk: options.acknowledgePlaintextPromptRisk ?? false,
           extraSecretPaths: [],
           extraConfigPaths: [],
         });
@@ -284,10 +300,13 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         await writeSyncConfig(locations, config);
         const repoRoot = resolveRepoRoot(config, locations);
         await ensureRepoCloned(ctx.$, config, repoRoot);
+        await ensurePrivateDataPolicy(ctx, config);
+        await assertRestrictedRepoLayout(repoRoot);
 
         const branch = await resolveBranch(ctx, config, repoRoot);
 
         await fetchAndFastForward(ctx.$, repoRoot, branch);
+        await assertRestrictedRepoLayout(repoRoot);
 
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
@@ -307,8 +326,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           'Restart opencode to apply the new settings.',
           '',
           found.isPrivate
-            ? 'To enable secrets sync, run: /sync-enable-secrets'
-            : 'Note: Repo is public. Secrets sync is disabled.',
+            ? 'Private repository verified. Secret files remain local-only.'
+            : 'Public repository detected. Prompt snapshots remain disabled.',
         ];
 
         await showToast(ctx.client, 'Config synced. Restart opencode to apply.', 'info');
@@ -319,7 +338,10 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         const config = await getConfigOrThrow(locations);
         const repoRoot = resolveRepoRoot(config, locations);
         await ensureRepoCloned(ctx.$, config, repoRoot);
-        await ensureSecretsPolicy(ctx, config);
+        await ensurePrivateDataPolicy(ctx, config);
+        await assertRestrictedRepoLayout(repoRoot);
+        const attemptedAt = new Date().toISOString();
+        await writeState(locations, { lastAttempt: attemptedAt });
 
         const branch = await resolveBranch(ctx, config, repoRoot);
 
@@ -331,17 +353,19 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         }
 
         const update = await fetchAndFastForward(ctx.$, repoRoot, branch);
-        if (!update.updated) {
-          return 'Already up to date.';
-        }
+        await assertRestrictedRepoLayout(repoRoot);
 
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
         await syncRepoToLocal(plan, overrides);
 
+        const completedAt = new Date().toISOString();
         await writeState(locations, {
-          lastPull: new Date().toISOString(),
-          lastRemoteUpdate: new Date().toISOString(),
+          lastFetch: completedAt,
+          lastApplied: completedAt,
+          lastPull: completedAt,
+          ...(update.updated ? { lastRemoteUpdate: completedAt } : {}),
+          lastOutcome: 'pulled',
         });
 
         await showToast(ctx.client, 'Config updated. Restart opencode to apply.', 'info');
@@ -350,91 +374,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
     push: () =>
       runExclusive(async () => {
         const config = await getConfigOrThrow(locations);
-        const repoRoot = resolveRepoRoot(config, locations);
-        await ensureRepoCloned(ctx.$, config, repoRoot);
-        await ensureSecretsPolicy(ctx, config);
-        const branch = await resolveBranch(ctx, config, repoRoot);
-
-        const preDirty = await hasLocalChanges(ctx.$, repoRoot);
-        if (preDirty) {
-          throw new SyncCommandError(
-            `Local sync repo has uncommitted changes. Resolve in ${repoRoot} before pushing.`
-          );
-        }
-
-        const overrides = await loadOverrides(locations);
-        const plan = buildSyncPlan(config, locations, repoRoot);
-        await syncLocalToRepo(plan, overrides, {
-          overridesPath: locations.overridesPath,
-          allowMcpSecrets: canCommitMcpSecrets(config),
-        });
-
-        const dirty = await hasLocalChanges(ctx.$, repoRoot);
-        if (!dirty) {
-          return 'No local changes to push.';
-        }
-
-        const message = await generateCommitMessage({ client: ctx.client, $: ctx.$ }, repoRoot);
-        await commitAll(ctx.$, repoRoot, message);
-        await pushBranch(ctx.$, repoRoot, branch);
-
-        await writeState(locations, {
-          lastPush: new Date().toISOString(),
-        });
-
-        return `Pushed changes: ${message}`;
-      }),
-    enableSecrets: (options?: { extraSecretPaths?: string[]; includeMcpSecrets?: boolean }) =>
-      runExclusive(async () => {
-        const config = await getConfigOrThrow(locations);
-        config.includeSecrets = true;
-        if (options?.extraSecretPaths) {
-          config.extraSecretPaths = options.extraSecretPaths;
-        }
-        if (options?.includeMcpSecrets !== undefined) {
-          config.includeMcpSecrets = options.includeMcpSecrets;
-        }
-
-        await ensureRepoPrivate(ctx.$, config);
-        await writeSyncConfig(locations, config);
-
-        return 'Secrets sync enabled for this repo.';
-      }),
-    resolve: () =>
-      runExclusive(async () => {
-        const config = await getConfigOrThrow(locations);
-        const repoRoot = resolveRepoRoot(config, locations);
-        await ensureRepoCloned(ctx.$, config, repoRoot);
-
-        const dirty = await hasLocalChanges(ctx.$, repoRoot);
-        if (!dirty) {
-          return 'No uncommitted changes to resolve.';
-        }
-
-        const status = await getRepoStatus(ctx.$, repoRoot);
-        const decision = await analyzeAndDecideResolution(
-          { client: ctx.client, $: ctx.$ },
-          repoRoot,
-          status.changes
-        );
-
-        if (decision.action === 'commit') {
-          const message = decision.message ?? 'Sync: Auto-resolved uncommitted changes';
-          await commitAll(ctx.$, repoRoot, message);
-          return `Resolved by committing changes: ${message}`;
-        }
-
-        if (decision.action === 'reset') {
-          try {
-            await ctx.$`git -C ${repoRoot} reset --hard HEAD`.quiet();
-            await ctx.$`git -C ${repoRoot} clean -fd`.quiet();
-            return 'Resolved by discarding all uncommitted changes.';
-          } catch (error) {
-            throw new SyncCommandError(`Failed to reset changes: ${formatError(error)}`);
-          }
-        }
-
-        return `Unable to automatically resolve. Please manually resolve in: ${repoRoot}`;
+        return runLocalWinsSync(ctx, locations, config, log);
       }),
   };
 }
@@ -445,58 +385,113 @@ async function runStartup(
   config: ReturnType<typeof normalizeSyncConfig>,
   log: Logger
 ): Promise<void> {
-  const repoRoot = resolveRepoRoot(config, locations);
-  log.debug('Starting sync', { repoRoot });
-
-  await ensureRepoCloned(ctx.$, config, repoRoot);
-  await ensureSecretsPolicy(ctx, config);
-  const branch = await resolveBranch(ctx, config, repoRoot);
-  log.debug('Resolved branch', { branch });
-
-  const dirty = await hasLocalChanges(ctx.$, repoRoot);
-  if (dirty) {
-    log.warn('Uncommitted changes detected', { repoRoot });
-    await showToast(
-      ctx.client,
-      `Uncommitted changes detected. Run /sync-resolve to auto-fix, or manually resolve in: ${repoRoot}`,
-      'warning'
-    );
-    return;
+  const result = await runLocalWinsSync(ctx, locations, config, log);
+  if (result === 'pulled') {
+    await showToast(ctx.client, 'Config updated. Restart opencode to apply.', 'info');
   }
+}
 
-  const update = await fetchAndFastForward(ctx.$, repoRoot, branch);
-  if (update.updated) {
-    log.info('Pulled remote changes', { branch });
+async function runLocalWinsSync(
+  ctx: SyncServiceContext,
+  locations: ReturnType<typeof resolveSyncLocations>,
+  config: ReturnType<typeof normalizeSyncConfig>,
+  log: Logger
+): Promise<string> {
+  const attemptedAt = new Date().toISOString();
+  await writeState(locations, { lastAttempt: attemptedAt });
+  const repoRoot = resolveRepoRoot(config, locations);
+  const workspaceParent = path.dirname(locations.statePath);
+  const projectionRoot = path.join(workspaceParent, 'opencode-synced', 'projection');
+  const rollbackBase = path.join(workspaceParent, 'opencode-synced', 'rollbacks');
+
+  try {
+    await assertSafeDestination(workspaceParent, projectionRoot);
+    await ensureRepoCloned(ctx.$, config, repoRoot);
+    await ensurePrivateDataPolicy(ctx, config);
+    await assertRestrictedRepoLayout(repoRoot);
+    const branch = await resolveBranch(ctx, config, repoRoot);
+    const dirty = await hasLocalChanges(ctx.$, repoRoot);
+    if (dirty) {
+      throw new SyncCommandError(
+        `Local sync repo has uncommitted changes. Resolve them manually in ${repoRoot}.`
+      );
+    }
+
     const overrides = await loadOverrides(locations);
     const plan = buildSyncPlan(config, locations, repoRoot);
-    await syncRepoToLocal(plan, overrides);
-    await writeState(locations, {
-      lastPull: new Date().toISOString(),
-      lastRemoteUpdate: new Date().toISOString(),
+    const projection = await createLocalProjection(plan, overrides, projectionRoot, {
+      overridesPath: locations.overridesPath,
     });
-    await showToast(ctx.client, 'Config updated. Restart opencode to apply.', 'info');
-    return;
-  }
+    const update = await fetchAndRebaseLocalWins(ctx.$, repoRoot, branch);
+    await assertRestrictedRepoLayout(repoRoot);
+    const fetchedAt = new Date().toISOString();
+    await writeState(locations, { lastFetch: fetchedAt });
 
-  const overrides = await loadOverrides(locations);
-  const plan = buildSyncPlan(config, locations, repoRoot);
-  await syncLocalToRepo(plan, overrides, {
-    overridesPath: locations.overridesPath,
-    allowMcpSecrets: canCommitMcpSecrets(config),
-  });
-  const changes = await hasLocalChanges(ctx.$, repoRoot);
-  if (!changes) {
-    log.debug('No local changes to push');
-    return;
-  }
+    if (update.updated && projection.changedItemIndexes.length > 0) {
+      const rollbackRoot = path.join(rollbackBase, safeTimestamp());
+      await assertSafeDestination(workspaceParent, rollbackRoot);
+      await applyLocalProjection(plan, projection, rollbackRoot);
+      log.warn('Concurrent remote changes reconciled with local-wins policy', {
+        changedItems: projection.changedItemIndexes.length,
+        rollbackRoot,
+      });
+    } else if (!update.updated) {
+      await syncLocalToRepo(plan, overrides, {
+        overridesPath: locations.overridesPath,
+        allowMcpSecrets: canCommitMcpSecrets(config),
+      });
+    }
 
-  const message = await generateCommitMessage({ client: ctx.client, $: ctx.$ }, repoRoot);
-  log.info('Pushing local changes', { message });
-  await commitAll(ctx.$, repoRoot, message);
-  await pushBranch(ctx.$, repoRoot, branch);
-  await writeState(locations, {
-    lastPush: new Date().toISOString(),
-  });
+    let message: string | null = null;
+    if (await hasLocalChanges(ctx.$, repoRoot)) {
+      message = 'sync: update OpenCode configuration';
+      await commitAll(ctx.$, repoRoot, message);
+      await writeState(locations, { lastCommit: new Date().toISOString() });
+    }
+
+    const pushed = await pushPendingCommits(ctx.$, repoRoot, branch);
+    if (pushed) {
+      const completedAt = new Date().toISOString();
+      await writeState(locations, {
+        lastPush: completedAt,
+        lastOutcome: 'pushed',
+      });
+      await syncRepoToLocal(plan, overrides);
+      return message ? `Pushed changes: ${message}` : 'Pushed pending commits.';
+    }
+
+    if (update.updated) {
+      await syncRepoToLocal(plan, overrides);
+      const completedAt = new Date().toISOString();
+      await writeState(locations, {
+        lastApplied: completedAt,
+        lastPull: completedAt,
+        lastRemoteUpdate: completedAt,
+        lastOutcome: 'pulled',
+      });
+      return 'pulled';
+    }
+
+    const completedAt = new Date().toISOString();
+    await writeState(locations, {
+      lastNoop: completedAt,
+      lastOutcome: 'noop',
+    });
+    return 'No local or remote changes.';
+  } catch (error) {
+    await writeState(locations, {
+      lastError: new Date().toISOString(),
+      lastOutcome: 'failed',
+    });
+    throw error;
+  } finally {
+    await assertSafeDestination(workspaceParent, projectionRoot);
+    await fs.rm(projectionRoot, { recursive: true, force: true });
+  }
+}
+
+function safeTimestamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
 async function getConfigOrThrow(
@@ -511,25 +506,20 @@ async function getConfigOrThrow(
   return config;
 }
 
-async function ensureSecretsPolicy(
+async function ensurePrivateDataPolicy(
   ctx: SyncServiceContext,
   config: ReturnType<typeof normalizeSyncConfig>
 ) {
-  if (!config.includeSecrets) return;
+  if (!config.includePromptHistory && !config.includePromptStash) return;
   await ensureRepoPrivate(ctx.$, config);
 }
 
 async function resolveBranch(
-  ctx: SyncServiceContext,
+  _ctx: SyncServiceContext,
   config: ReturnType<typeof normalizeSyncConfig>,
-  repoRoot: string
+  _repoRoot: string
 ): Promise<string> {
-  try {
-    const status = await getRepoStatus(ctx.$, repoRoot);
-    return resolveRepoBranch(config, status.branch);
-  } catch {
-    return resolveRepoBranch(config);
-  }
+  return resolveRepoBranch(config);
 }
 
 const DEFAULT_REPO_NAME = 'my-opencode-config';
@@ -541,8 +531,12 @@ async function buildConfigFromInit($: Shell, options: InitOptions) {
     includeSecrets: options.includeSecrets ?? false,
     includeMcpSecrets: options.includeMcpSecrets ?? false,
     includeSessions: options.includeSessions ?? false,
+    includeSkills: options.includeSkills ?? false,
+    includePromptHistory: options.includePromptHistory ?? false,
     includePromptStash: options.includePromptStash ?? false,
     includeModelFavorites: options.includeModelFavorites ?? true,
+    includeModelSelectors: options.includeModelSelectors ?? false,
+    acknowledgePlaintextPromptRisk: options.acknowledgePlaintextPromptRisk ?? false,
     extraSecretPaths: options.extraSecretPaths ?? [],
     extraConfigPaths: options.extraConfigPaths ?? [],
     localRepoPath: options.localRepoPath,
@@ -599,109 +593,4 @@ async function createRepo(
 function formatError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
-}
-
-interface ResolutionDecision {
-  action: 'commit' | 'reset' | 'manual';
-  message?: string;
-  reason?: string;
-}
-
-async function analyzeAndDecideResolution(
-  ctx: { client: SyncServiceContext['client']; $: Shell },
-  repoRoot: string,
-  changes: string[]
-): Promise<ResolutionDecision> {
-  try {
-    const diff = await ctx.$`git -C ${repoRoot} diff HEAD`.quiet().text();
-    const statusOutput = changes.join('\n');
-
-    const prompt = [
-      'You are analyzing uncommitted changes in an opencode-synced repository.',
-      'Decide whether to commit these changes or discard them.',
-      '',
-      'IMPORTANT: Only choose "commit" if the changes appear to be legitimate config updates.',
-      'Choose "discard" if the changes look like temporary files, cache, or corruption.',
-      '',
-      'Respond with ONLY a JSON object in this exact format:',
-      '{"action": "commit", "message": "your commit message here"}',
-      'OR',
-      '{"action": "discard", "reason": "explanation why discarding"}',
-      '',
-      'Status:',
-      statusOutput,
-      '',
-      'Diff preview (first 2000 chars):',
-      diff.slice(0, 2000),
-    ].join('\n');
-
-    const model = await resolveSmallModel(ctx.client);
-    if (!model) {
-      return { action: 'manual', reason: 'No AI model available' };
-    }
-
-    let sessionId: string | null = null;
-    try {
-      const sessionResult = await ctx.client.session.create({
-        body: { title: 'sync-resolve' },
-      });
-      const session = unwrapData<{ id: string }>(sessionResult);
-      sessionId = session?.id ?? null;
-      if (!sessionId) {
-        return { action: 'manual', reason: 'Failed to create session' };
-      }
-
-      const response = await ctx.client.session.prompt({
-        path: { id: sessionId },
-        body: {
-          model,
-          parts: [{ type: 'text', text: prompt }],
-        },
-      });
-
-      const messageText = extractTextFromResponse(unwrapData(response) ?? response);
-      if (!messageText) {
-        return { action: 'manual', reason: 'No response from AI' };
-      }
-
-      const decision = parseResolutionDecision(messageText);
-      return decision;
-    } finally {
-      if (sessionId) {
-        try {
-          await ctx.client.session.delete({ path: { id: sessionId } });
-        } catch {}
-      }
-    }
-  } catch (error) {
-    console.error('[ERROR] AI resolution analysis failed:', error);
-    return { action: 'manual', reason: `Error analyzing changes: ${formatError(error)}` };
-  }
-}
-
-function parseResolutionDecision(text: string): ResolutionDecision {
-  try {
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return { action: 'manual', reason: 'Could not parse AI response' };
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as {
-      action?: string;
-      message?: string;
-      reason?: string;
-    };
-
-    if (parsed.action === 'commit' && parsed.message) {
-      return { action: 'commit', message: parsed.message };
-    }
-
-    if (parsed.action === 'discard') {
-      return { action: 'reset', reason: parsed.reason };
-    }
-
-    return { action: 'manual', reason: 'Unexpected AI response format' };
-  } catch {
-    return { action: 'manual', reason: 'Failed to parse AI decision' };
-  }
 }

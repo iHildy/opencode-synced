@@ -1,7 +1,6 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
 
-import type { SyncConfig } from './config.js';
+import { assertSupportedSyncScope, type SyncConfig } from './config.js';
 
 export interface XdgPaths {
   homeDir: string;
@@ -20,6 +19,12 @@ export interface SyncLocations {
 }
 
 export type SyncItemType = 'file' | 'dir';
+export type SyncItemStrategy =
+  | 'copy'
+  | 'skills'
+  | 'prompt-snapshot'
+  | 'model-favorites'
+  | 'model-selector';
 
 export interface SyncItem {
   localPath: string;
@@ -27,20 +32,14 @@ export interface SyncItem {
   type: SyncItemType;
   isSecret: boolean;
   isConfigFile: boolean;
-}
-
-export interface ExtraPathPlan {
-  allowlist: string[];
-  manifestPath: string;
-  entries: Array<{ sourcePath: string; repoPath: string }>;
+  strategy?: SyncItemStrategy;
 }
 
 export interface SyncPlan {
   items: SyncItem[];
-  extraSecrets: ExtraPathPlan;
-  extraConfigs: ExtraPathPlan;
   repoRoot: string;
   homeDir: string;
+  localRoots?: string[];
   platform: NodeJS.Platform;
 }
 
@@ -52,9 +51,10 @@ const DEFAULT_OVERRIDES_NAME = 'opencode-synced.overrides.jsonc';
 const DEFAULT_STATE_NAME = 'sync-state.json';
 
 const CONFIG_DIRS = ['agent', 'command', 'mode', 'tool', 'themes', 'plugin'];
-const SESSION_DIRS = ['storage/session', 'storage/message', 'storage/part', 'storage/session_diff'];
-const PROMPT_STASH_FILES = ['prompt-stash.jsonl', 'prompt-history.jsonl'];
 const MODEL_FAVORITES_FILE = 'model.json';
+const PROMPT_HISTORY_FILE = 'prompt-history.jsonl';
+const PROMPT_STASH_FILE = 'prompt-stash.jsonl';
+const MODEL_SELECTOR_FILES = ['main-model.txt', 'cheap-model.txt'];
 
 export function resolveHomeDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -102,7 +102,7 @@ export function resolveSyncLocations(
   platform: NodeJS.Platform = process.platform
 ): SyncLocations {
   const xdg = resolveXdgPaths(env, platform);
-  const customConfigDir = env.opencode_config_dir;
+  const customConfigDir = env.OPENCODE_CONFIG_DIR ?? env.opencode_config_dir;
   const configRoot = customConfigDir
     ? path.resolve(expandHome(customConfigDir, xdg.homeDir))
     : path.join(xdg.configDir, 'opencode');
@@ -148,16 +148,6 @@ export function isSamePath(
   return normalizePath(left, homeDir, platform) === normalizePath(right, homeDir, platform);
 }
 
-export function encodeExtraPath(inputPath: string): string {
-  const normalized = inputPath.replace(/\\/g, '/');
-  const safeBase = normalized.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+/, '');
-  const hash = crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 8);
-  const base = safeBase ? safeBase.slice(-80) : 'path';
-  return `${base}-${hash}`;
-}
-
-export const encodeSecretPath = encodeExtraPath;
-
 export function resolveRepoRoot(config: SyncConfig | null, locations: SyncLocations): string {
   if (config?.localRepoPath) {
     return expandHome(config.localRepoPath, locations.xdg.homeDir);
@@ -172,17 +162,12 @@ export function buildSyncPlan(
   repoRoot: string,
   platform: NodeJS.Platform = process.platform
 ): SyncPlan {
+  assertSupportedSyncScope(config);
+
   const configRoot = locations.configRoot;
-  const dataRoot = path.join(locations.xdg.dataDir, 'opencode');
   const stateRoot = path.join(locations.xdg.stateDir, 'opencode');
   const repoConfigRoot = path.join(repoRoot, 'config');
-  const repoDataRoot = path.join(repoRoot, 'data');
-  const repoSecretsRoot = path.join(repoRoot, 'secrets');
   const repoStateRoot = path.join(repoRoot, 'state');
-  const repoExtraDir = path.join(repoSecretsRoot, 'extra');
-  const manifestPath = path.join(repoSecretsRoot, 'extra-manifest.json');
-  const repoConfigExtraDir = path.join(repoConfigRoot, 'extra');
-  const configManifestPath = path.join(repoConfigRoot, 'extra-manifest.json');
 
   const items: SyncItem[] = [];
 
@@ -210,104 +195,68 @@ export function buildSyncPlan(
     });
   }
 
-  if (config.includeModelFavorites !== false) {
+  if (config.includeSkills) {
     items.push({
-      localPath: path.join(stateRoot, MODEL_FAVORITES_FILE),
-      repoPath: path.join(repoStateRoot, MODEL_FAVORITES_FILE),
-      type: 'file',
+      localPath: path.join(configRoot, 'skills'),
+      repoPath: path.join(repoConfigRoot, 'skills'),
+      type: 'dir',
       isSecret: false,
       isConfigFile: false,
+      strategy: 'skills',
     });
   }
 
-  if (config.includeSecrets) {
-    items.push(
-      {
-        localPath: path.join(dataRoot, 'auth.json'),
-        repoPath: path.join(repoDataRoot, 'auth.json'),
-        type: 'file',
-        isSecret: true,
-        isConfigFile: false,
-      },
-      {
-        localPath: path.join(dataRoot, 'mcp-auth.json'),
-        repoPath: path.join(repoDataRoot, 'mcp-auth.json'),
-        type: 'file',
-        isSecret: true,
-        isConfigFile: false,
-      }
-    );
+  if (config.includeModelFavorites !== false) {
+    items.push({
+      localPath: path.join(stateRoot, MODEL_FAVORITES_FILE),
+      repoPath: path.join(repoStateRoot, 'model-favorites.json'),
+      type: 'file',
+      isSecret: false,
+      isConfigFile: false,
+      strategy: 'model-favorites',
+    });
+  }
 
-    if (config.includeSessions) {
-      for (const dirName of SESSION_DIRS) {
-        items.push({
-          localPath: path.join(dataRoot, dirName),
-          repoPath: path.join(repoDataRoot, dirName),
-          type: 'dir',
-          isSecret: true,
-          isConfigFile: false,
-        });
-      }
-    }
+  if (config.includePromptHistory) {
+    items.push({
+      localPath: path.join(stateRoot, PROMPT_HISTORY_FILE),
+      repoPath: path.join(repoStateRoot, 'prompts', PROMPT_HISTORY_FILE),
+      type: 'file',
+      isSecret: true,
+      isConfigFile: false,
+      strategy: 'prompt-snapshot',
+    });
+  }
 
-    if (config.includePromptStash) {
-      for (const fileName of PROMPT_STASH_FILES) {
-        items.push({
-          localPath: path.join(stateRoot, fileName),
-          repoPath: path.join(repoStateRoot, fileName),
-          type: 'file',
-          isSecret: true,
-          isConfigFile: false,
-        });
-      }
+  if (config.includePromptStash) {
+    items.push({
+      localPath: path.join(stateRoot, PROMPT_STASH_FILE),
+      repoPath: path.join(repoStateRoot, 'prompts', PROMPT_STASH_FILE),
+      type: 'file',
+      isSecret: true,
+      isConfigFile: false,
+      strategy: 'prompt-snapshot',
+    });
+  }
+
+  if (config.includeModelSelectors) {
+    for (const fileName of MODEL_SELECTOR_FILES) {
+      items.push({
+        localPath: path.join(configRoot, fileName),
+        repoPath: path.join(repoStateRoot, 'model-selectors', fileName),
+        type: 'file',
+        isSecret: false,
+        isConfigFile: false,
+        strategy: 'model-selector',
+      });
     }
   }
 
-  const extraSecrets = buildExtraPathPlan(
-    config.includeSecrets ? config.extraSecretPaths : [],
-    locations,
-    repoExtraDir,
-    manifestPath,
-    platform
-  );
-
-  const extraConfigs = buildExtraPathPlan(
-    config.extraConfigPaths,
-    locations,
-    repoConfigExtraDir,
-    configManifestPath,
-    platform
-  );
-
   return {
     items,
-    extraSecrets,
-    extraConfigs,
     repoRoot,
     homeDir: locations.xdg.homeDir,
+    localRoots: [configRoot, stateRoot],
     platform,
-  };
-}
-
-function buildExtraPathPlan(
-  inputPaths: string[] | undefined,
-  locations: SyncLocations,
-  repoExtraDir: string,
-  manifestPath: string,
-  platform: NodeJS.Platform
-): ExtraPathPlan {
-  const allowlist = (inputPaths ?? []).map((entry) =>
-    normalizePath(entry, locations.xdg.homeDir, platform)
-  );
-
-  const entries = allowlist.map((sourcePath) => ({
-    sourcePath,
-    repoPath: path.join(repoExtraDir, encodeExtraPath(sourcePath)),
-  }));
-
-  return {
-    allowlist,
-    manifestPath,
-    entries,
   };
 }

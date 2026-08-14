@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -11,48 +13,111 @@ import {
   writeJsonFile,
 } from './config.js';
 import {
+  assertNoLiteralSecrets,
   extractMcpSecrets,
   hasOverrides,
   mergeOverrides,
   stripOverrideKeys,
 } from './mcp-secrets.js';
-import type { ExtraPathPlan, SyncItem, SyncPlan } from './paths.js';
-import { normalizePath } from './paths.js';
-
-type ExtraPathType = 'file' | 'dir';
-
-interface ExtraPathManifestItem {
-  relativePath: string;
-  type: ExtraPathType;
-  mode?: number;
-}
-
-interface ExtraPathManifestEntry {
-  sourcePath: string;
-  repoPath: string;
-  type?: ExtraPathType;
-  mode?: number;
-  items?: ExtraPathManifestItem[];
-}
-
-interface ExtraPathManifest {
-  entries: ExtraPathManifestEntry[];
-}
+import type { SyncItem, SyncPlan } from './paths.js';
 
 export async function syncRepoToLocal(
   plan: SyncPlan,
   overrides: Record<string, unknown> | null
 ): Promise<void> {
-  for (const item of plan.items) {
-    await copyItem(item.repoPath, item.localPath, item.type);
+  const rollbackRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-synced-apply-'));
+  await fs.chmod(rollbackRoot, 0o700);
+  let retainRollback = false;
+  try {
+    await backupLocalItems(plan, rollbackRoot);
+    try {
+      await applyRepoToLocal(plan, overrides);
+    } catch (error) {
+      const restoreErrors = await restoreLocalItems(plan, rollbackRoot);
+      if (restoreErrors.length > 0) {
+        retainRollback = true;
+        throw new AggregateError(
+          [error, ...restoreErrors],
+          `Remote apply failed and rollback data was retained at ${rollbackRoot}`
+        );
+      }
+      throw error;
+    }
+  } finally {
+    if (!retainRollback) await fs.rm(rollbackRoot, { recursive: true, force: true });
   }
+}
 
-  await applyExtraPaths(plan, plan.extraConfigs);
-  await applyExtraPaths(plan, plan.extraSecrets);
+async function applyRepoToLocal(
+  plan: SyncPlan,
+  overrides: Record<string, unknown> | null
+): Promise<void> {
+  for (const item of plan.items) {
+    assertPathInside(plan.repoRoot, item.repoPath);
+    const localRoot = findAllowedLocalRoot(plan, item.localPath);
+    await assertSafeDestination(localRoot, item.localPath);
+    if (item.isConfigFile) {
+      await validateRemoteConfig(item.repoPath);
+    }
+    if (item.strategy === 'model-favorites') {
+      await applyModelFavorites(item, localRoot);
+      continue;
+    }
+    await copyItem(item.repoPath, item.localPath, item.type, true, {
+      sourceRoot: plan.repoRoot,
+      destinationRoot: localRoot,
+      strategy: item.strategy,
+    });
+  }
 
   if (overrides && Object.keys(overrides).length > 0) {
     await applyOverridesToLocalConfig(plan, overrides);
   }
+}
+
+async function validateRemoteConfig(configPath: string): Promise<void> {
+  const stat = await lstatOrNull(configPath);
+  if (!stat) return;
+  if (stat.isSymbolicLink()) throw new Error(`Refusing to read symlink: ${configPath}`);
+  if (!stat.isFile()) throw new Error(`Expected regular file: ${configPath}`);
+  const parsed = parseJsonc<Record<string, unknown>>(await fs.readFile(configPath, 'utf8'));
+  assertNoLiteralSecrets(parsed);
+}
+
+async function backupLocalItems(plan: SyncPlan, rollbackRoot: string): Promise<void> {
+  for (let index = 0; index < plan.items.length; index += 1) {
+    const item = plan.items[index];
+    const localRoot = findAllowedLocalRoot(plan, item.localPath);
+    const rollbackPath = localRollbackPath(rollbackRoot, item, index);
+    await copyItem(item.localPath, rollbackPath, item.type, true, {
+      sourceRoot: localRoot,
+      destinationRoot: rollbackRoot,
+      strategy: 'copy',
+    });
+  }
+}
+
+async function restoreLocalItems(plan: SyncPlan, rollbackRoot: string): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  for (let index = plan.items.length - 1; index >= 0; index -= 1) {
+    const item = plan.items[index];
+    const localRoot = findAllowedLocalRoot(plan, item.localPath);
+    const rollbackPath = localRollbackPath(rollbackRoot, item, index);
+    try {
+      await copyItem(rollbackPath, item.localPath, item.type, true, {
+        sourceRoot: rollbackRoot,
+        destinationRoot: localRoot,
+        strategy: 'copy',
+      });
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return errors;
+}
+
+function localRollbackPath(rollbackRoot: string, item: SyncItem, index: number): string {
+  return path.join(rollbackRoot, String(index), path.basename(item.localPath) || 'item');
 }
 
 export async function syncLocalToRepo(
@@ -71,6 +136,7 @@ export async function syncLocalToRepo(
     const content = await fs.readFile(item.localPath, 'utf8');
     const parsed = parseJsonc<Record<string, unknown>>(content);
     const { sanitizedConfig, secretOverrides: extracted } = extractMcpSecrets(parsed);
+    assertNoLiteralSecrets(sanitizedConfig);
     if (!allowMcpSecrets) {
       sanitizedConfigs.set(item.localPath, sanitizedConfig);
     }
@@ -85,46 +151,94 @@ export async function syncLocalToRepo(
       const baseOverrides = overrides ?? {};
       const mergedOverrides = mergeOverrides(baseOverrides, secretOverrides);
       if (options.overridesPath && !isDeepEqual(baseOverrides, mergedOverrides)) {
-        await writeJsonFile(options.overridesPath, mergedOverrides, { jsonc: true });
+        const overridesParent = path.dirname(options.overridesPath);
+        await fs.mkdir(overridesParent, { recursive: true, mode: 0o700 });
+        await fs.chmod(overridesParent, 0o700);
+        await writeJsonFile(options.overridesPath, mergedOverrides, { jsonc: true, mode: 0o600 });
       }
     }
     overridesForStrip = overrides ? stripOverrideKeys(overrides, secretOverrides) : overrides;
   }
 
   for (const item of plan.items) {
+    assertPathInside(plan.repoRoot, item.repoPath);
+    const localRoot = findAllowedLocalRoot(plan, item.localPath);
+    await assertSafeDestination(localRoot, item.localPath);
     if (item.isConfigFile) {
       const sanitized = sanitizedConfigs.get(item.localPath);
       await copyConfigForRepo(item, overridesForStrip, plan.repoRoot, sanitized);
       continue;
     }
 
-    await copyItem(item.localPath, item.repoPath, item.type, true);
-  }
+    if (item.strategy === 'model-favorites') {
+      await writeModelFavorites(item, plan);
+      continue;
+    }
 
-  await writeExtraPathManifest(plan, plan.extraConfigs);
-  await writeExtraPathManifest(plan, plan.extraSecrets);
+    await copyItem(item.localPath, item.repoPath, item.type, true, {
+      sourceRoot: localRoot,
+      destinationRoot: plan.repoRoot,
+      strategy: item.strategy,
+    });
+  }
 }
 
 async function copyItem(
   sourcePath: string,
   destinationPath: string,
   type: SyncItem['type'],
-  removeWhenMissing = false
+  removeWhenMissing = false,
+  options: {
+    sourceRoot?: string;
+    destinationRoot?: string;
+    strategy?: SyncItem['strategy'];
+  } = {}
 ): Promise<void> {
-  if (!(await pathExists(sourcePath))) {
+  if (options.sourceRoot) assertPathInside(options.sourceRoot, sourcePath);
+  if (options.destinationRoot) assertPathInside(options.destinationRoot, destinationPath);
+  if (options.sourceRoot) await assertSafeDestination(options.sourceRoot, sourcePath);
+  if (options.destinationRoot)
+    await assertSafeDestination(options.destinationRoot, destinationPath);
+
+  const sourceStat = await lstatOrNull(sourcePath);
+  if (!sourceStat) {
     if (removeWhenMissing) {
       await removePath(destinationPath);
     }
     return;
   }
 
+  if (sourceStat.isSymbolicLink()) {
+    throw new Error(`Refusing to copy symlink: ${sourcePath}`);
+  }
+
   if (type === 'file') {
-    await copyFileWithMode(sourcePath, destinationPath);
+    if (!sourceStat.isFile()) {
+      throw new Error(`Expected regular file: ${sourcePath}`);
+    }
+    if (options.strategy === 'prompt-snapshot') {
+      await validatePromptSnapshot(sourcePath, sourceStat.size);
+    }
+    const isPrivateSnapshot = options.strategy === 'prompt-snapshot';
+    await copyFileWithMode(
+      sourcePath,
+      destinationPath,
+      options.destinationRoot,
+      isPrivateSnapshot ? 0o600 : undefined,
+      isPrivateSnapshot ? 0o700 : undefined
+    );
     return;
   }
 
-  await removePath(destinationPath);
-  await copyDirRecursive(sourcePath, destinationPath);
+  if (!sourceStat.isDirectory()) {
+    throw new Error(`Expected directory: ${sourcePath}`);
+  }
+  await replaceDirectoryAtomic(
+    sourcePath,
+    destinationPath,
+    options.strategy === 'skills',
+    options.destinationRoot
+  );
 }
 
 async function copyConfigForRepo(
@@ -133,6 +247,7 @@ async function copyConfigForRepo(
   repoRoot: string,
   configOverride?: Record<string, unknown>
 ): Promise<void> {
+  await assertSafeDestination(repoRoot, item.repoPath);
   if (!(await pathExists(item.localPath))) {
     await removePath(item.repoPath);
     return;
@@ -150,7 +265,9 @@ async function copyConfigForRepo(
     }
   }
   const stripped = stripOverrides(localConfig, effectiveOverrides, baseConfig);
-  const stat = await fs.stat(item.localPath);
+  assertPathInside(repoRoot, item.repoPath);
+  const stat = await safeRegularFileStat(item.localPath);
+  await assertSafeDestination(repoRoot, item.repoPath);
   await fs.mkdir(path.dirname(item.repoPath), { recursive: true });
   await writeJsonFile(item.repoPath, stripped, {
     jsonc: item.localPath.endsWith('.jsonc'),
@@ -162,9 +279,7 @@ async function readRepoConfig(
   item: SyncItem,
   repoRoot: string
 ): Promise<Record<string, unknown> | null> {
-  if (!item.repoPath.startsWith(repoRoot)) {
-    return null;
-  }
+  assertPathInside(repoRoot, item.repoPath);
   if (!(await pathExists(item.repoPath))) {
     return null;
   }
@@ -183,7 +298,7 @@ async function applyOverridesToLocalConfig(
     const content = await fs.readFile(item.localPath, 'utf8');
     const parsed = parseJsonc<Record<string, unknown>>(content);
     const merged = deepMerge(parsed, overrides) as Record<string, unknown>;
-    const stat = await fs.stat(item.localPath);
+    const stat = await safeRegularFileStat(item.localPath);
     await writeJsonFile(item.localPath, merged, {
       jsonc: item.localPath.endsWith('.jsonc'),
       mode: stat.mode & 0o777,
@@ -191,30 +306,67 @@ async function applyOverridesToLocalConfig(
   }
 }
 
-async function copyFileWithMode(sourcePath: string, destinationPath: string): Promise<void> {
-  const stat = await fs.stat(sourcePath);
-  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
-  await fs.copyFile(sourcePath, destinationPath);
-  await chmodIfExists(destinationPath, stat.mode & 0o777);
+async function copyFileWithMode(
+  sourcePath: string,
+  destinationPath: string,
+  destinationRoot?: string,
+  modeOverride?: number,
+  parentMode?: number
+): Promise<void> {
+  const stat = await safeRegularFileStat(sourcePath);
+  if (destinationRoot) await assertSafeDestination(destinationRoot, destinationPath);
+  const destinationParent = path.dirname(destinationPath);
+  await fs.mkdir(destinationParent, { recursive: true, mode: parentMode });
+  if (parentMode !== undefined) await fs.chmod(destinationParent, parentMode);
+  const tempPath = `${destinationPath}.sync-tmp-${randomUUID()}`;
+  try {
+    await fs.copyFile(sourcePath, tempPath);
+    await fs.chmod(tempPath, modeOverride ?? stat.mode & 0o777);
+    await fs.rename(tempPath, destinationPath);
+  } finally {
+    await fs.rm(tempPath, { force: true });
+  }
 }
 
-async function copyDirRecursive(sourcePath: string, destinationPath: string): Promise<void> {
-  const stat = await fs.stat(sourcePath);
+async function copyDirRecursive(
+  sourcePath: string,
+  destinationPath: string,
+  skillsOnly = false,
+  relativeRoot = sourcePath
+): Promise<void> {
+  const stat = await fs.lstat(sourcePath);
+  if (stat.isSymbolicLink()) throw new Error(`Refusing to copy symlink: ${sourcePath}`);
+  if (!stat.isDirectory()) throw new Error(`Expected directory: ${sourcePath}`);
   await fs.mkdir(destinationPath, { recursive: true });
   const entries = await fs.readdir(sourcePath, { withFileTypes: true });
 
   for (const entry of entries) {
     const entrySource = path.join(sourcePath, entry.name);
     const entryDest = path.join(destinationPath, entry.name);
+    const relativePath = path.relative(relativeRoot, entrySource);
+
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Refusing to copy symlink: ${entrySource}`);
+    }
+    if (skillsOnly) {
+      const skillPathPolicy = classifySkillPath(relativePath, entry.isDirectory());
+      if (skillPathPolicy === 'ignore') continue;
+      if (skillPathPolicy === 'reject') {
+        throw new Error(`Refusing to sync sensitive skill path: ${relativePath}`);
+      }
+    }
 
     if (entry.isDirectory()) {
-      await copyDirRecursive(entrySource, entryDest);
+      await copyDirRecursive(entrySource, entryDest, skillsOnly, relativeRoot);
       continue;
     }
 
     if (entry.isFile()) {
+      if (skillsOnly) await assertSkillFileContentSafe(entrySource, relativePath);
       await copyFileWithMode(entrySource, entryDest);
+      continue;
     }
+    throw new Error(`Refusing unsupported filesystem entry: ${entrySource}`);
   }
 
   await chmodIfExists(destinationPath, stat.mode & 0o777);
@@ -224,154 +376,245 @@ async function removePath(targetPath: string): Promise<void> {
   await fs.rm(targetPath, { recursive: true, force: true });
 }
 
-async function applyExtraPaths(plan: SyncPlan, extra: ExtraPathPlan): Promise<void> {
-  const allowlist = extra.allowlist;
-  if (allowlist.length === 0) return;
-
-  if (!(await pathExists(extra.manifestPath))) return;
-
-  const manifestContent = await fs.readFile(extra.manifestPath, 'utf8');
-  const manifest = parseJsonc<ExtraPathManifest>(manifestContent);
-
-  for (const entry of manifest.entries) {
-    const normalized = normalizePath(entry.sourcePath, plan.homeDir, plan.platform);
-    const isAllowed = allowlist.includes(normalized);
-    if (!isAllowed) continue;
-
-    const repoPath = path.isAbsolute(entry.repoPath)
-      ? entry.repoPath
-      : path.join(plan.repoRoot, entry.repoPath);
-    const localPath = entry.sourcePath;
-    const entryType: ExtraPathType = entry.type ?? 'file';
-
-    if (!(await pathExists(repoPath))) continue;
-
-    await copyItem(repoPath, localPath, entryType);
-    await applyExtraPathModes(localPath, entry);
-  }
-}
-
-async function writeExtraPathManifest(plan: SyncPlan, extra: ExtraPathPlan): Promise<void> {
-  const allowlist = extra.allowlist;
-  const extraDir = path.join(path.dirname(extra.manifestPath), 'extra');
-  if (allowlist.length === 0) {
-    await removePath(extra.manifestPath);
-    await removePath(extraDir);
-    return;
-  }
-
-  await removePath(extraDir);
-
-  const entries: ExtraPathManifestEntry[] = [];
-
-  for (const entry of extra.entries) {
-    const sourcePath = entry.sourcePath;
-    if (!(await pathExists(sourcePath))) {
-      continue;
-    }
-    const stat = await fs.stat(sourcePath);
-    if (stat.isDirectory()) {
-      await copyDirRecursive(sourcePath, entry.repoPath);
-      const items = await collectExtraPathItems(sourcePath, sourcePath);
-      entries.push({
-        sourcePath,
-        repoPath: path.relative(plan.repoRoot, entry.repoPath),
-        type: 'dir',
-        mode: stat.mode & 0o777,
-        items,
-      });
-      continue;
-    }
-    if (stat.isFile()) {
-      await copyFileWithMode(sourcePath, entry.repoPath);
-      entries.push({
-        sourcePath,
-        repoPath: path.relative(plan.repoRoot, entry.repoPath),
-        type: 'file',
-        mode: stat.mode & 0o777,
-      });
-    }
-  }
-
-  await fs.mkdir(path.dirname(extra.manifestPath), { recursive: true });
-  await writeJsonFile(extra.manifestPath, { entries }, { jsonc: false });
-}
-
-async function collectExtraPathItems(
+async function replaceDirectoryAtomic(
   sourcePath: string,
-  basePath: string
-): Promise<ExtraPathManifestItem[]> {
-  const items: ExtraPathManifestItem[] = [];
-  const entries = await fs.readdir(sourcePath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const entrySource = path.join(sourcePath, entry.name);
-    const relativePath = path.relative(basePath, entrySource);
-
-    if (entry.isDirectory()) {
-      const stat = await fs.stat(entrySource);
-      items.push({
-        relativePath,
-        type: 'dir',
-        mode: stat.mode & 0o777,
-      });
-      const nested = await collectExtraPathItems(entrySource, basePath);
-      items.push(...nested);
-      continue;
-    }
-
-    if (entry.isFile()) {
-      const stat = await fs.stat(entrySource);
-      items.push({
-        relativePath,
-        type: 'file',
-        mode: stat.mode & 0o777,
-      });
-    }
-  }
-
-  return items;
-}
-
-async function applyExtraPathModes(
-  targetPath: string,
-  entry: ExtraPathManifestEntry
+  destinationPath: string,
+  skillsOnly: boolean,
+  destinationRoot?: string
 ): Promise<void> {
-  if (entry.mode !== undefined) {
-    await chmodIfExists(targetPath, entry.mode);
-  }
+  if (destinationRoot) await assertSafeDestination(destinationRoot, destinationPath);
+  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+  const stagePath = `${destinationPath}.sync-tmp-${randomUUID()}`;
+  const backupPath = `${destinationPath}.sync-backup-${randomUUID()}`;
+  let hasBackup = false;
 
-  if (entry.type !== 'dir') {
-    return;
-  }
-
-  if (!entry.items || entry.items.length === 0) {
-    return;
-  }
-
-  for (const item of entry.items) {
-    if (item.mode === undefined) continue;
-    const itemPath = resolveExtraPathItem(targetPath, item.relativePath);
-    if (!itemPath) continue;
-    await chmodIfExists(itemPath, item.mode);
+  try {
+    await copyDirRecursive(sourcePath, stagePath, skillsOnly);
+    const destinationStat = await lstatOrNull(destinationPath);
+    if (destinationStat?.isSymbolicLink()) {
+      throw new Error(`Refusing to replace symlink: ${destinationPath}`);
+    }
+    if (destinationStat) {
+      if (!destinationStat.isDirectory()) throw new Error(`Expected directory: ${destinationPath}`);
+      await fs.rename(destinationPath, backupPath);
+      hasBackup = true;
+    }
+    await fs.rename(stagePath, destinationPath);
+    if (hasBackup) {
+      await fs.rm(backupPath, { recursive: true, force: true });
+      hasBackup = false;
+    }
+  } catch (error) {
+    const destinationExists = Boolean(await lstatOrNull(destinationPath));
+    if (hasBackup && !destinationExists) {
+      try {
+        await fs.rename(backupPath, destinationPath);
+        hasBackup = false;
+      } catch (restoreError) {
+        throw new AggregateError(
+          [error, restoreError],
+          `Directory replacement failed and backup was retained at ${backupPath}`
+        );
+      }
+    }
+    throw error;
+  } finally {
+    await fs.rm(stagePath, { recursive: true, force: true });
   }
 }
 
-function resolveExtraPathItem(basePath: string, relativePath: string): string | null {
-  if (!relativePath) return null;
-  if (path.isAbsolute(relativePath)) return null;
-
-  const resolvedBase = path.resolve(basePath);
-  const resolvedPath = path.resolve(basePath, relativePath);
-  const relative = path.relative(resolvedBase, resolvedPath);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`)) {
-    return null;
+async function writeModelFavorites(item: SyncItem, plan: SyncPlan): Promise<void> {
+  await assertSafeDestination(plan.repoRoot, item.repoPath);
+  const sourceStat = await lstatOrNull(item.localPath);
+  if (!sourceStat) {
+    await removePath(item.repoPath);
+    return;
   }
-  if (path.isAbsolute(relative)) {
-    return null;
+  const stat = await safeRegularFileStat(item.localPath);
+  const modelState = parseJsonc<Record<string, unknown>>(await fs.readFile(item.localPath, 'utf8'));
+  const favorite = modelState.favorite;
+  if (!Array.isArray(favorite)) throw new Error(`Invalid model favorites file: ${item.localPath}`);
+  await assertSafeDestination(plan.repoRoot, item.repoPath);
+  await fs.mkdir(path.dirname(item.repoPath), { recursive: true });
+  await writeJsonFile(item.repoPath, { favorite }, { jsonc: false, mode: stat.mode & 0o777 });
+}
+
+async function applyModelFavorites(item: SyncItem, localRoot: string): Promise<void> {
+  const remoteStat = await lstatOrNull(item.repoPath);
+  if (!remoteStat) {
+    const localStat = await lstatOrNull(item.localPath);
+    if (!localStat) return;
+    if (localStat.isSymbolicLink())
+      throw new Error(`Refusing to replace symlink: ${item.localPath}`);
+    if (!localStat.isFile()) throw new Error(`Expected regular file: ${item.localPath}`);
+    const local = parseJsonc<Record<string, unknown>>(await fs.readFile(item.localPath, 'utf8'));
+    await assertSafeDestination(localRoot, item.localPath);
+    await writeJsonFile(
+      item.localPath,
+      { ...local, favorite: [] },
+      { jsonc: false, mode: localStat.mode & 0o777 }
+    );
+    return;
+  }
+  if (remoteStat.isSymbolicLink()) throw new Error(`Refusing to read symlink: ${item.repoPath}`);
+  if (!remoteStat.isFile()) throw new Error(`Expected regular file: ${item.repoPath}`);
+  const remote = parseJsonc<Record<string, unknown>>(await fs.readFile(item.repoPath, 'utf8'));
+  if (!Array.isArray(remote.favorite)) {
+    throw new Error(`Invalid model favorites projection: ${item.repoPath}`);
   }
 
-  return resolvedPath;
+  const localStat = await lstatOrNull(item.localPath);
+  if (localStat?.isSymbolicLink())
+    throw new Error(`Refusing to replace symlink: ${item.localPath}`);
+  const local = localStat
+    ? parseJsonc<Record<string, unknown>>(await fs.readFile(item.localPath, 'utf8'))
+    : {};
+  await assertSafeDestination(localRoot, item.localPath);
+  await fs.mkdir(path.dirname(item.localPath), { recursive: true });
+  await writeJsonFile(
+    item.localPath,
+    { ...local, favorite: remote.favorite },
+    { jsonc: false, mode: localStat ? localStat.mode & 0o777 : 0o600 }
+  );
+}
+
+function classifySkillPath(
+  relativePath: string,
+  isDirectory: boolean
+): 'include' | 'ignore' | 'reject' {
+  const segments = relativePath.split(path.sep);
+  const lowerSegments = segments.map((segment) => segment.toLowerCase());
+  const name = lowerSegments.at(-1) ?? '';
+  const ignoredDirectories = new Set([
+    '.cache',
+    '.git',
+    '.mypy_cache',
+    '.pytest_cache',
+    '.venv',
+    '__pycache__',
+    'build',
+    'coverage',
+    'dist',
+    'node_modules',
+    'target',
+    'venv',
+  ]);
+  if (isDirectory && ignoredDirectories.has(name)) return 'ignore';
+  if (name.endsWith('.pyc') || name.endsWith('.pyo')) return 'ignore';
+  if (name.endsWith(':zone.identifier') || name === '.ds_store') return 'ignore';
+
+  const sensitiveDirectories = new Set(['.gnupg', '.ssh', 'private', 'secrets']);
+  if (lowerSegments.some((segment) => sensitiveDirectories.has(segment))) return 'reject';
+  const sensitiveNames = new Set([
+    '.netrc',
+    '.npmrc',
+    'auth.json',
+    'credentials.json',
+    'id_ed25519',
+    'id_rsa',
+    'token.json',
+  ]);
+  if (name === '.env' || name.startsWith('.env.')) return 'reject';
+  if (sensitiveNames.has(name)) return 'reject';
+  if (/\.(?:db|key|kdbx|p12|pem|pfx|sqlite|sqlite3)$/i.test(name)) return 'reject';
+  return 'include';
+}
+
+async function assertSkillFileContentSafe(filePath: string, relativePath: string): Promise<void> {
+  const stat = await safeRegularFileStat(filePath);
+  const maxBytes = 16 * 1024 * 1024;
+  if (stat.size > maxBytes) {
+    throw new Error(`Refusing oversized skill file (${stat.size} bytes): ${relativePath}`);
+  }
+  const content = await fs.readFile(filePath);
+  if (content.includes(0)) return;
+  const text = content.toString('utf8');
+  const secretPatterns = [
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+    /ghp_[A-Za-z0-9]{36,}/,
+    /github_pat_[A-Za-z0-9_]{50,}/,
+    /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/,
+  ];
+  if (secretPatterns.some((pattern) => pattern.test(text))) {
+    throw new Error(`Refusing to sync secret-like skill content: ${relativePath}`);
+  }
+}
+
+async function validatePromptSnapshot(filePath: string, size: number): Promise<void> {
+  const maxBytes = 16 * 1024 * 1024;
+  if (size > maxBytes) throw new Error(`Prompt snapshot exceeds ${maxBytes} bytes: ${filePath}`);
+  const content = await fs.readFile(filePath, 'utf8');
+  const lines = content.split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    try {
+      const value = JSON.parse(line) as unknown;
+      if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new Error('not object');
+    } catch {
+      throw new Error(`Invalid prompt JSONL at ${filePath}:${index + 1}`);
+    }
+  }
+}
+
+function assertPathInside(rootPath: string, candidatePath: string): void {
+  const root = path.resolve(rootPath);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(root, candidate);
+  if (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  ) {
+    return;
+  }
+  throw new Error(`Path is outside the allowed root: ${candidatePath}`);
+}
+
+function findAllowedLocalRoot(plan: SyncPlan, candidatePath: string): string {
+  for (const root of plan.localRoots ?? [plan.homeDir]) {
+    try {
+      assertPathInside(root, candidatePath);
+      return root;
+    } catch {}
+  }
+  throw new Error(`Path is outside the allowed local roots: ${candidatePath}`);
+}
+
+export async function assertSafeDestination(
+  rootPath: string,
+  destinationPath: string
+): Promise<void> {
+  assertPathInside(rootPath, destinationPath);
+  const root = path.resolve(rootPath);
+  const rootStat = await lstatOrNull(root);
+  if (rootStat?.isSymbolicLink()) throw new Error(`Refusing to traverse symlink: ${root}`);
+  if (rootStat && !rootStat.isDirectory()) throw new Error(`Expected directory root: ${root}`);
+  const relative = path.relative(root, path.resolve(destinationPath));
+  let current = root;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stat = await lstatOrNull(current);
+    if (!stat) break;
+    if (stat.isSymbolicLink()) throw new Error(`Refusing to traverse symlink: ${current}`);
+  }
+}
+
+async function safeRegularFileStat(filePath: string) {
+  const stat = await fs.lstat(filePath);
+  if (stat.isSymbolicLink()) throw new Error(`Refusing to copy symlink: ${filePath}`);
+  if (!stat.isFile()) throw new Error(`Expected regular file: ${filePath}`);
+  return stat;
+}
+
+async function lstatOrNull(filePath: string) {
+  try {
+    return await fs.lstat(filePath);
+  } catch (error) {
+    const maybeErrno = error as NodeJS.ErrnoException;
+    if (maybeErrno.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 function isDeepEqual(left: unknown, right: unknown): boolean {

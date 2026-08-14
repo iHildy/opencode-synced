@@ -31,24 +31,26 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Resolve plugin version
         id: version
+        env:
+          DIST_TAG: ${{ inputs.tag }}
         run: |
-          VERSION=$(npm view opencode-synced@${{ inputs.tag }} version)
+          case "$DIST_TAG" in
+            latest|next) ;;
+            *) echo "Unsupported npm dist-tag"; exit 1 ;;
+          esac
+          VERSION=$(npm view "@tsunamik/opencode-synced@$DIST_TAG" version)
           if [ -z "$VERSION" ]; then
-            echo "No version found for tag: ${{ inputs.tag }}"
+            echo "No version found for requested tag"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install opencode
-        env:
-          opencode_install_dir: ${{ runner.temp }}/opencode/bin
-        run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "${opencode_install_dir}" >> "$GITHUB_PATH"
+        run: npm install --global opencode-ai@1.18.15
 
       - name: Configure clean opencode home
         env:
@@ -65,23 +67,7 @@ jobs:
           cat > "$XDG_CONFIG_HOME/opencode/opencode.json" <<EOF
           {
             "\$schema": "https://opencode.ai/config.json",
-            "plugin": ["opencode-synced@${PLUGIN_VERSION}"]
-          }
-          EOF
-
-          SYNC_REPO="$XDG_DATA_HOME/opencode-synced/repo"
-          mkdir -p "$SYNC_REPO"
-          git -C "$SYNC_REPO" init -q
-
-          cat > "$XDG_CONFIG_HOME/opencode/opencode-synced.jsonc" <<EOF
-          {
-            "repo": {
-              "owner": "smoke",
-              "name": "opencode-config",
-            },
-            "localRepoPath": "$SYNC_REPO",
-            "includeSecrets": false,
-            "extraSecretPaths": [],
+            "plugin": ["@tsunamik/opencode-synced@${PLUGIN_VERSION}"]
           }
           EOF
 
@@ -155,7 +141,7 @@ jobs:
 
       - name: Upload opencode logs (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: opencode-smoke-logs-${{ matrix.os }}
           path: ${{ runner.temp }}/opencode-smoke.log

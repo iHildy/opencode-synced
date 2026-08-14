@@ -1,291 +1,170 @@
-# opencode-synced
+# @tsunamik/opencode-synced
 
-Sync global opencode configuration across machines via a GitHub repo, with optional secrets support for private repos.
+Hardened, narrow OpenCode configuration and state synchronization for trusted machines.
+This project is a fork of [iHildy/opencode-synced](https://github.com/iHildy/opencode-synced)
+based on the upstream `v0.9.0` release.
 
-## Features
+## Scope
 
-- Syncs global opencode config (`~/.config/opencode`) and related directories
-- Optional secrets sync when the repo is private
-- Optional session sync to share conversation history across machines
-- Optional prompt stash sync to share stashed prompts and history across machines
-- Startup auto-sync with restart toast
-- Per-machine overrides via `opencode-synced.overrides.jsonc`
-- Custom `/sync-*` commands and `opencode_sync` tool
+Supported synchronized data:
+
+- global `opencode.json` or `opencode.jsonc` and `AGENTS.md`
+- `agent/`, `command/`, `mode/`, `tool/`, `themes/`, and legacy singular `plugin/`
+- global `skills/`
+- plaintext prompt history and prompt stash in a private repository
+- only the `favorite` projection from `state/opencode/model.json`
+- `main-model.txt` and `cheap-model.txt`
+
+Always local and rejected by configuration validation:
+
+- OpenCode authentication and MCP authentication files
+- sessions, messages, parts, diffs, and `opencode.db`
+- the global `secrets/` directory
+- `opencode-synced.jsonc` and `opencode-synced.overrides.jsonc`
+- arbitrary extra paths and custom local repository paths
+
+## Important Security Properties
+
+- Prompt synchronization requires a private GitHub repository and the explicit
+  `acknowledgePlaintextPromptRisk` setting.
+- Private GitHub repositories provide access control, not end-to-end encryption. Prompt
+  content remains recoverable from Git history and every clone.
+- Remote and local symlinks and unsupported filesystem entries are rejected.
+- Skills exclude `__pycache__`, `*.pyc`, `*.pyo`, `.DS_Store`, and
+  `*:Zone.Identifier` files.
+- Local generated configuration, state, and rollback bundles use owner-only permissions.
+- Secrets, sessions, local overrides, and sync configuration cannot be enabled by tool flags.
+- The AI-based destructive `/sync-resolve` command is removed.
+
+The sync repository contains active content. A trusted machine can push agents, commands,
+skills, MCP commands, or plugin configuration that executes on another linked machine.
+
+## Conflict Policy
+
+The last successful synchronization wins.
+
+Before fetch, the plugin projects the current local managed state into a temporary owner-only
+directory. After fetching remote changes, only items that were changed locally are applied on
+top of the fetched branch. This preserves unrelated changes from both machines. If both machines
+changed the same managed item, the currently synchronizing machine wins.
+
+The displaced remote item remains in Git history and is copied to an owner-only rollback bundle
+under the OpenCode state directory. Wall-clock timestamps are never used to choose a winner.
 
 ## Requirements
 
-- GitHub CLI (`gh`) installed and authenticated (`gh auth login`)
-- Git installed and available on PATH
+- Git
+- GitHub CLI (`gh`) installed and authenticated
+- a private GitHub data repository when prompt synchronization is enabled
 
-## Setup
+## Pilot Installation
 
-Enable the plugin in your global opencode config (opencode will install it on next run):
+Build and pack one artifact, then install the exact same artifact checksum on both machines:
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-synced"],
-}
+```bash
+npm install --ignore-scripts --no-package-lock
+npm test
+npm run build
+npm pack --ignore-scripts
 ```
 
-opencode does not auto-update plugins. To update, modify the version number in your config file.
+During the pilot, load the built `dist/index.js` from a local clone or install the packed
+artifact into OpenCode's package cache. Do not use a mutable branch reference.
 
-## Configure
+## Configuration
 
-### First machine (create new sync repo)
-
-Run `/sync-init` to create a new sync repo:
-
-1. Detects your GitHub username
-2. Creates a private repo (`my-opencode-config` by default)
-3. Clones the repo and pushes your current config
-
-### Additional machines (link to existing repo)
-
-Run `/sync-link` to connect to your existing sync repo:
-
-1. Searches your GitHub for common sync repo names (prioritizes `my-opencode-config`)
-2. Clones and applies the synced config
-3. **Overwrites local config** with synced content (preserves your local overrides file)
-
-If auto-detection fails, specify the repo name: `/sync-link my-opencode-config`
-
-After linking, restart opencode to apply the synced settings.
-
-### Custom repo name or org
-
-You can specify a custom repo name or use an organization:
-
-- `/sync-init` - Uses `{your-username}/my-opencode-config`
-- `/sync-init my-config` - Uses `{your-username}/my-config`
-- `/sync-init my-org/team-config` - Uses `my-org/team-config`
-
-<details>
-<summary>Manual configuration</summary>
-
-Create `~/.config/opencode/opencode-synced.jsonc`:
+`~/.config/opencode/opencode-synced.jsonc` is local-only:
 
 ```jsonc
 {
   "repo": {
-    "owner": "your-org",
-    "name": "opencode-config",
-    "branch": "main",
+    "owner": "your-github-user",
+    "name": "my-opencode-config",
+    "branch": "main"
   },
-  "includeSecrets": false,
-  "includeMcpSecrets": false,
-  "includeSessions": false,
-  "includePromptStash": false,
+  "includeSkills": true,
+  "includePromptHistory": true,
+  "includePromptStash": true,
+  "acknowledgePlaintextPromptRisk": true,
   "includeModelFavorites": true,
-  "extraSecretPaths": [],
-  "extraConfigPaths": [],
+  "includeModelSelectors": true
 }
 ```
 
-</details>
+Prompt flags fail unless the risk acknowledgement is exactly `true`. The repository visibility
+is checked before prompt data is read or written.
 
-### Synced paths (default)
-
-- `~/.config/opencode/opencode.json` and `opencode.jsonc`
-- `~/.config/opencode/AGENTS.md`
-- `~/.config/opencode/agent/`, `command/`, `mode/`, `tool/`, `themes/`, `plugin/`
-- `~/.local/state/opencode/model.json` (model favorites)
-- Any extra paths in `extraConfigPaths` (allowlist, files or folders)
-
-### Secrets (private repos only)
-
-Enable secrets with `/sync-enable-secrets` or set `"includeSecrets": true`:
-
-- `~/.local/share/opencode/auth.json`
-- `~/.local/share/opencode/mcp-auth.json`
-- Any extra paths in `extraSecretPaths` (allowlist, files or folders)
-
-MCP API keys stored inside `opencode.json(c)` are **not** committed by default. To allow them
-in a private repo, set `"includeMcpSecrets": true` (requires `includeSecrets`).
-
-### Sessions (private repos only)
-
-Sync your opencode sessions (conversation history from `/sessions`) across machines by setting `"includeSessions": true`. This requires `includeSecrets` to also be enabled since sessions may contain sensitive data.
-
-```jsonc
-{
-  "repo": { ... },
-  "includeSecrets": true,
-  "includeSessions": true
-}
-```
-
-Synced session data:
-
-- `~/.local/share/opencode/storage/session/` - Session files
-- `~/.local/share/opencode/storage/message/` - Message history
-- `~/.local/share/opencode/storage/part/` - Message parts
-- `~/.local/share/opencode/storage/session_diff/` - Session diffs
-
-### Prompt Stash (private repos only)
-
-Sync your stashed prompts and prompt history across machines by setting `"includePromptStash": true`. This requires `includeSecrets` to also be enabled since prompts may contain sensitive data.
-
-```jsonc
-{
-  "repo": { ... },
-  "includeSecrets": true,
-  "includePromptStash": true
-}
-```
-
-Synced prompt data:
-
-- `~/.local/state/opencode/prompt-stash.jsonl` - Stashed prompts
-- `~/.local/state/opencode/prompt-history.jsonl` - Prompt history
-
-## Overrides
-
-Create a local-only overrides file at:
-
-```
-~/.config/opencode/opencode-synced.overrides.jsonc
-```
-
-Overrides are merged into the runtime config and re-applied to `opencode.json(c)` after pull.
-
-### MCP secret scrubbing
-
-If your `opencode.json(c)` contains MCP secrets (for example `mcp.*.headers` or `mcp.*.oauth.clientSecret`), opencode-synced will automatically:
-
-1. Move the secret values into `opencode-synced.overrides.jsonc` (local-only).
-2. Replace the values in the synced config with `{env:...}` placeholders.
-
-This keeps secrets out of the repo while preserving local behavior. On other machines, set the matching environment variables (or add local overrides).
-If you want MCP secrets committed (private repos only), set `"includeMcpSecrets": true` alongside `"includeSecrets": true`.
-
-Env var naming rules:
-
-- If the header name already looks like an env var (e.g. `CONTEXT7_API_KEY`), it is used directly.
-- Otherwise: `opencode_mcp_<SERVER>_<HEADER>` (non-alphanumerics become `_`).
-- OAuth client secrets use `opencode_mcp_<SERVER>_OAUTH_CLIENT_SECRET`.
-
-## Usage
+## Commands
 
 | Command | Description |
-|---------|-------------|
-| `/sync-init` | Create a new sync repo (first machine) |
-| `/sync-link` | Link to existing sync repo (additional machines) |
-| `/sync-status` | Show repo status and last sync times |
-| `/sync-pull` | Fetch and apply remote config |
-| `/sync-push` | Commit and push local changes |
-| `/sync-enable-secrets` | Enable secrets sync (private repos only) |
-| `/sync-resolve` | Auto-resolve uncommitted changes using AI |
+| --- | --- |
+| `/sync-init` | Create or initialize the first private sync repository |
+| `/sync-link` | Link another machine after making a local backup |
+| `/sync-status` | Show repository and operation state |
+| `/sync-pull` | Apply the remote state; remote wins for an explicit pull |
+| `/sync-push` | Reconcile and push; the current machine wins same-item conflicts |
 
-<details>
-<summary>Manual sync (without slash commands)</summary>
+Linking applies the remote managed scope and may overwrite local files. Back up every machine
+before the first link.
 
-### Trigger a sync
+## Repository Layout
 
-Restart opencode to run the startup sync flow (pull remote, apply if changed, push local changes if needed).
-
-### Check status
-
-Inspect the local repo directly:
-
-```bash
-cd ~/.local/share/opencode/opencode-synced/repo
-git status
-git log --oneline -5
+```text
+config/
+  opencode.json
+  AGENTS.md
+  agent/
+  command/
+  skills/
+state/
+  model-favorites.json
+  model-selectors/
+    main-model.txt
+    cheap-model.txt
+  prompts/
+    prompt-history.jsonl
+    prompt-stash.jsonl
 ```
 
-</details>
+Legacy `data/`, `secrets/`, raw `state/model.json`, direct prompt files, extra manifests, and
+tracked sync configuration cause synchronization to stop with a migration error.
+
+## Model State
+
+Only `model.json.favorite` is stored in Git. Pulling favorites preserves each machine's local
+`recent` and `variant` data.
+
+## Prompt State
+
+Prompt files must be valid JSONL and are limited to 16 MiB each. They are synchronized as whole
+snapshots. Concurrent same-file changes use the last-successful-sync-wins policy; the losing
+snapshot remains recoverable from Git history and the local rollback bundle.
+
+Prompt/model state is synchronized before OpenCode registers the plugin hooks so in-memory TUI
+stores do not overwrite freshly imported state during startup. Manual pulls should still be
+followed by an OpenCode restart.
 
 ## Recovery
 
-If the sync repo has uncommitted changes, you can:
-
-1. **Auto-resolve using AI**: Run `/sync-resolve` to let AI analyze and decide whether to commit or discard the changes
-2. **Manual resolution**: Navigate to the repo and resolve manually:
-
-```bash
-cd ~/.local/share/opencode/opencode-synced/repo
-git status
-git pull --rebase
-```
-
-Then re-run `/sync-pull` or `/sync-push`.
-
-## Removal
-
-<details>
-<summary>How to completely remove and delete opencode-synced</summary>
-
-Run this one-liner to remove the plugin from your config, delete local sync files, and delete the GitHub repository:
-
-```bash
-bun -e '
-  const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), { spawnSync } = require("node:child_process");
-  const isWin = os.platform() === "win32", home = os.homedir();
-  const configDir = isWin ? path.join(process.env.APPDATA, "opencode") : path.join(home, ".config", "opencode");
-  const dataDir = isWin ? path.join(process.env.LOCALAPPDATA, "opencode") : path.join(home, ".local", "share", "opencode");
-  ["opencode.json", "opencode.jsonc"].forEach(f => {
-    const p = path.join(configDir, f);
-    if (fs.existsSync(p)) {
-      const c = fs.readFileSync(p, "utf8"), u = c.replace(/"opencode-synced"\s*,?\s*/g, "").replace(/,\s*\]/g, "]");
-      if (c !== u) fs.writeFileSync(p, u);
-    }
-  });
-  const scp = path.join(configDir, "opencode-synced.jsonc");
-  if (fs.existsSync(scp)) {
-    try {
-      const c = JSON.parse(fs.readFileSync(scp, "utf8").replace(/\/\/.*/g, ""));
-      if (c.repo?.owner && c.repo?.name) {
-        const res = spawnSync("gh", ["repo", "delete", `${c.repo.owner}/${c.repo.name}`, "--yes"], { stdio: "inherit" });
-        if (res.status !== 0) console.log("\nNote: Repository delete failed. If it is a permission error, run: gh auth refresh -s delete_repo\n");
-      }
-    } catch (e) {}
-  }
-  [scp, path.join(configDir, "opencode-synced.overrides.jsonc"), path.join(dataDir, "sync-state.json"), path.join(dataDir, "opencode-synced")].forEach(p => {
-    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
-  });
-  console.log("opencode-synced removed.");
-'
-```
-
-### Manual steps
-1. Remove `"opencode-synced"` from the `plugin` array in `~/.config/opencode/opencode.json` (or `.jsonc`).
-2. Delete the local configuration and state:
-   ```bash
-   rm ~/.config/opencode/opencode-synced.jsonc
-   rm ~/.local/share/opencode/sync-state.json
-   rm -rf ~/.local/share/opencode/opencode-synced
-   ```
-3. (Optional) Delete the backup repository on GitHub via the web UI or `gh repo delete`.
-
-</details>
+- Never force-push the data repository.
+- Resolve an unexpected dirty sync clone manually after preserving a copy.
+- Revert bad remote changes with a normal Git revert commit.
+- Local conflict backups live under the OpenCode state directory in
+  `opencode-synced/rollbacks/`.
+- Restore the previous pinned plugin artifact to roll back plugin behavior.
 
 ## Development
 
-- `bun run build`
-- `bun run test`
-- `bun run lint`
-
-### Local testing (production-like)
-
-To test the same artifact that would be published, install from a packed tarball
-into opencode's cache:
-
 ```bash
-mise run local-pack-test
+npm install --ignore-scripts --no-package-lock
+npm test
+npm run build
+npm run lint
 ```
 
-Then set `~/.config/opencode/opencode.json` to use:
+Architecture and threat-model decisions are documented in
+[`docs/extended-sync-v1.md`](docs/extended-sync-v1.md).
 
-```jsonc
-{
-  "plugin": ["opencode-synced"]
-}
-```
+## License
 
-Restart opencode to pick up the cached install.
-
-
-## Prefer a CLI version?
-
-I stumbled upon [opencodesync](https://www.npmjs.com/package/opencodesync) while publishing this plugin.
+MIT, preserving the original upstream copyright and license.
