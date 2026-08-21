@@ -22,9 +22,9 @@ describe('resolveXdgPaths', () => {
     } as NodeJS.ProcessEnv;
     const paths = resolveXdgPaths(env, 'win32');
 
-    expect(paths.configDir).toBe('C:\\Users\\Test\\.config');
-    expect(paths.dataDir).toBe('C:\\Users\\Test\\.local\\share');
-    expect(paths.stateDir).toBe('C:\\Users\\Test\\.local\\state');
+    expect(paths.configDir).toBe(path.join('C:\\Users\\Test', '.config'));
+    expect(paths.dataDir).toBe(path.join('C:\\Users\\Test', '.local', 'share'));
+    expect(paths.stateDir).toBe(path.join('C:\\Users\\Test', '.local', 'state'));
   });
 });
 
