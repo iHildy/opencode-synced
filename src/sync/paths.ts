@@ -54,7 +54,7 @@ const CONFIG_DIRS = ['agent', 'command', 'mode', 'tool', 'themes', 'plugin'];
 const MODEL_FAVORITES_FILE = 'model.json';
 const PROMPT_HISTORY_FILE = 'prompt-history.jsonl';
 const PROMPT_STASH_FILE = 'prompt-stash.jsonl';
-const MODEL_SELECTOR_FILES = ['main-model.txt', 'cheap-model.txt'];
+const MODEL_SELECTOR_FILES = ['main-model.txt', 'cheap-model.txt', 'frontier-model.txt'];
 
 export function resolveHomeDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -83,10 +83,10 @@ export function resolveXdgPaths(
   }
 
   if (platform === 'win32') {
-    const configDir = env.APPDATA ?? path.join(homeDir, 'AppData', 'Roaming');
-    const dataDir = env.LOCALAPPDATA ?? path.join(homeDir, 'AppData', 'Local');
-    // Windows doesn't have XDG_STATE_HOME equivalent, use LOCALAPPDATA
-    const stateDir = env.LOCALAPPDATA ?? path.join(homeDir, 'AppData', 'Local');
+    // This OpenCode installation uses XDG-compatible roots on Windows.
+    const configDir = env.XDG_CONFIG_HOME ?? path.join(homeDir, '.config');
+    const dataDir = env.XDG_DATA_HOME ?? path.join(homeDir, '.local', 'share');
+    const stateDir = env.XDG_STATE_HOME ?? path.join(homeDir, '.local', 'state');
     return { homeDir, configDir, dataDir, stateDir };
   }
 

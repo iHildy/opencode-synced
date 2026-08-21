@@ -13,7 +13,7 @@ Supported synchronized data:
 - global `skills/`
 - plaintext prompt history and prompt stash in a private repository
 - only the `favorite` projection from `state/opencode/model.json`
-- `main-model.txt` and `cheap-model.txt`
+- `main-model.txt`, `cheap-model.txt`, and `frontier-model.txt`
 
 Always local and rejected by configuration validation:
 
@@ -94,6 +94,10 @@ artifact into OpenCode's package cache. Do not use a mutable branch reference.
 Prompt flags fail unless the risk acknowledgement is exactly `true`. The repository visibility
 is checked before prompt data is read or written.
 
+On Windows, sync locations follow OpenCode's XDG-compatible layout: `%USERPROFILE%\.config`,
+`%USERPROFILE%\.local\share`, and `%USERPROFILE%\.local\state`. The native `APPDATA` and
+`LOCALAPPDATA` roots are not used for sync locations.
+
 ## Commands
 
 | Command | Description |
@@ -121,6 +125,7 @@ state/
   model-selectors/
     main-model.txt
     cheap-model.txt
+    frontier-model.txt
   prompts/
     prompt-history.jsonl
     prompt-stash.jsonl

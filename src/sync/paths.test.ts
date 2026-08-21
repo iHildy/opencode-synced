@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import type { SyncConfig } from './config.js';
@@ -8,8 +10,8 @@ describe('resolveXdgPaths', () => {
     const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
     const paths = resolveXdgPaths(env, 'linux');
 
-    expect(paths.configDir).toBe('/home/test/.config');
-    expect(paths.dataDir).toBe('/home/test/.local/share');
+    expect(paths.configDir).toBe(path.join('/home/test', '.config'));
+    expect(paths.dataDir).toBe(path.join('/home/test', '.local', 'share'));
   });
 
   it('resolves windows defaults', () => {
@@ -20,8 +22,9 @@ describe('resolveXdgPaths', () => {
     } as NodeJS.ProcessEnv;
     const paths = resolveXdgPaths(env, 'win32');
 
-    expect(paths.configDir).toBe('C:\\Users\\Test\\AppData\\Roaming');
-    expect(paths.dataDir).toBe('C:\\Users\\Test\\AppData\\Local');
+    expect(paths.configDir).toBe('C:\\Users\\Test\\.config');
+    expect(paths.dataDir).toBe('C:\\Users\\Test\\.local\\share');
+    expect(paths.stateDir).toBe('C:\\Users\\Test\\.local\\state');
   });
 });
 
@@ -33,7 +36,7 @@ describe('resolveSyncLocations', () => {
     } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');
 
-    expect(locations.configRoot).toBe('/official/opencode');
+    expect(locations.configRoot).toBe(path.resolve('/official/opencode'));
   });
 
   it('respects opencode_config_dir', () => {
@@ -43,9 +46,13 @@ describe('resolveSyncLocations', () => {
     } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');
 
-    expect(locations.configRoot).toBe('/custom/opencode');
-    expect(locations.syncConfigPath).toBe('/custom/opencode/opencode-synced.jsonc');
-    expect(locations.overridesPath).toBe('/custom/opencode/opencode-synced.overrides.jsonc');
+    expect(locations.configRoot).toBe(path.resolve('/custom/opencode'));
+    expect(locations.syncConfigPath).toBe(
+      path.join(path.resolve('/custom/opencode'), 'opencode-synced.jsonc')
+    );
+    expect(locations.overridesPath).toBe(
+      path.join(path.resolve('/custom/opencode'), 'opencode-synced.overrides.jsonc')
+    );
   });
 });
 
@@ -64,7 +71,10 @@ describe('buildSyncPlan', () => {
       'linux'
     );
 
-    expect(plan.localRoots).toEqual(['/mnt/config/opencode', '/mnt/state/opencode']);
+    expect(plan.localRoots).toEqual([
+      path.join('/mnt/config', 'opencode'),
+      path.join('/mnt/state', 'opencode'),
+    ]);
   });
 
   it('excludes secrets and arbitrary extra paths', () => {
@@ -108,7 +118,7 @@ describe('buildSyncPlan', () => {
 
     const plan = buildSyncPlan(config, locations, '/repo', 'linux');
     const favoritesItem = plan.items.find((item) =>
-      item.localPath.endsWith('/.local/state/opencode/model.json')
+      item.localPath.endsWith(path.join('.local', 'state', 'opencode', 'model.json'))
     );
 
     expect(favoritesItem).toBeTruthy();
@@ -120,7 +130,7 @@ describe('buildSyncPlan', () => {
       'linux'
     );
     const disabledItem = disabledPlan.items.find((item) =>
-      item.localPath.endsWith('/.local/state/opencode/model.json')
+      item.localPath.endsWith(path.join('.local', 'state', 'opencode', 'model.json'))
     );
 
     expect(disabledItem).toBeUndefined();
@@ -135,13 +145,13 @@ describe('buildSyncPlan', () => {
     };
 
     const disabled = buildSyncPlan(base, locations, '/repo', 'linux');
-    expect(disabled.items.some((item) => item.localPath.endsWith('/skills'))).toBe(false);
+    expect(disabled.items.some((item) => item.localPath.endsWith('skills'))).toBe(false);
 
     const enabled = buildSyncPlan({ ...base, includeSkills: true }, locations, '/repo', 'linux');
-    const skills = enabled.items.find((item) => item.localPath.endsWith('/skills'));
+    const skills = enabled.items.find((item) => item.localPath.endsWith('skills'));
 
     expect(skills).toMatchObject({
-      repoPath: '/repo/config/skills',
+      repoPath: path.join('/repo', 'config', 'skills'),
       type: 'dir',
       strategy: 'skills',
     });
@@ -164,20 +174,20 @@ describe('buildSyncPlan', () => {
     expect(promptItems).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          localPath: '/home/test/.local/state/opencode/prompt-history.jsonl',
-          repoPath: '/repo/state/prompts/prompt-history.jsonl',
+          localPath: path.join('/home/test', '.local', 'state', 'opencode', 'prompt-history.jsonl'),
+          repoPath: path.join('/repo', 'state', 'prompts', 'prompt-history.jsonl'),
           isSecret: true,
         }),
         expect.objectContaining({
-          localPath: '/home/test/.local/state/opencode/prompt-stash.jsonl',
-          repoPath: '/repo/state/prompts/prompt-stash.jsonl',
+          localPath: path.join('/home/test', '.local', 'state', 'opencode', 'prompt-stash.jsonl'),
+          repoPath: path.join('/repo', 'state', 'prompts', 'prompt-stash.jsonl'),
           isSecret: true,
         }),
       ])
     );
 
-    expect(plan.items.some((item) => item.localPath.endsWith('/auth.json'))).toBe(false);
-    expect(plan.items.some((item) => item.localPath.endsWith('/mcp-auth.json'))).toBe(false);
+    expect(plan.items.some((item) => item.localPath.endsWith('auth.json'))).toBe(false);
+    expect(plan.items.some((item) => item.localPath.endsWith('mcp-auth.json'))).toBe(false);
   });
 
   it('adds portable model selector files when enabled', () => {
@@ -194,12 +204,16 @@ describe('buildSyncPlan', () => {
     expect(selectors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          localPath: '/home/test/.config/opencode/main-model.txt',
-          repoPath: '/repo/state/model-selectors/main-model.txt',
+          localPath: path.join('/home/test', '.config', 'opencode', 'main-model.txt'),
+          repoPath: path.join('/repo', 'state', 'model-selectors', 'main-model.txt'),
         }),
         expect.objectContaining({
-          localPath: '/home/test/.config/opencode/cheap-model.txt',
-          repoPath: '/repo/state/model-selectors/cheap-model.txt',
+          localPath: path.join('/home/test', '.config', 'opencode', 'cheap-model.txt'),
+          repoPath: path.join('/repo', 'state', 'model-selectors', 'cheap-model.txt'),
+        }),
+        expect.objectContaining({
+          localPath: path.join('/home/test', '.config', 'opencode', 'frontier-model.txt'),
+          repoPath: path.join('/repo', 'state', 'model-selectors', 'frontier-model.txt'),
         }),
       ])
     );
@@ -215,8 +229,8 @@ describe('buildSyncPlan', () => {
       'linux'
     );
 
-    const favorites = plan.items.find((item) => item.localPath.endsWith('/model.json'));
+    const favorites = plan.items.find((item) => item.localPath.endsWith('model.json'));
     expect(favorites?.strategy).toBe('model-favorites');
-    expect(favorites?.repoPath).toBe('/repo/state/model-favorites.json');
+    expect(favorites?.repoPath).toBe(path.join('/repo', 'state', 'model-favorites.json'));
   });
 });

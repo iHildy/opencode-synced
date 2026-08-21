@@ -21,7 +21,7 @@ describe('normalizeRepoRemote', () => {
   });
 
   it('normalizes local repository paths', () => {
-    expect(normalizeRepoRemote('/tmp/example.git')).toBe('local:/tmp/example.git');
+    expect(normalizeRepoRemote('/tmp/example.git')).toBe(`local:${path.resolve('/tmp/example.git')}`);
   });
 
   it('does not equate alternate protocols or ports with canonical GitHub', () => {

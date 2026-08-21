@@ -38,7 +38,7 @@
     "vitest": "^3.2.4"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -r src/command dist/command",
+    "build": "node scripts/build.mjs",
     "prepack": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",

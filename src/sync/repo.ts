@@ -306,7 +306,7 @@ async function resolveRebaseConflictsLocalWins(
     }
 
     try {
-      await $`env GIT_EDITOR=true git -C ${repoDir} rebase --continue`.quiet();
+      await $`git -C ${repoDir} -c core.editor=true rebase --continue`.quiet();
       return;
     } catch {
       const remaining = await $`git -C ${repoDir} diff --name-only --diff-filter=U -z`

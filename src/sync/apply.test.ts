@@ -99,7 +99,16 @@ describe('safe synchronization', () => {
     await writeFile(path.join(skills, 'demo', 'run.sh'), '#!/bin/sh\nexit 0\n');
     await chmod(path.join(skills, 'demo', 'run.sh'), 0o755);
     await writeFile(path.join(skills, 'demo', '__pycache__', 'cache.pyc'), 'cache');
-    await writeFile(path.join(skills, 'demo', 'SKILL.md:Zone.Identifier'), 'metadata');
+    const zoneIdentifierNames =
+      process.platform === 'win32'
+        ? [
+            `SKILL.md${String.fromCharCode(0xf03a)}Zone.Identifier`,
+            `SKILL.md${String.fromCharCode(0xff1a)}Zone.Identifier`,
+          ]
+        : ['SKILL.md:Zone.Identifier'];
+    for (const zoneIdentifierName of zoneIdentifierNames) {
+      await writeFile(path.join(skills, 'demo', zoneIdentifierName), 'metadata');
+    }
     await writeFile(path.join(skills, '.DS_Store'), 'metadata');
 
     const destination = path.join(repo, 'config', 'skills');
@@ -120,13 +129,17 @@ describe('safe synchronization', () => {
     await expect(lstat(path.join(destination, 'demo', '__pycache__'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
-    await expect(
-      lstat(path.join(destination, 'demo', 'SKILL.md:Zone.Identifier'))
-    ).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const zoneIdentifierName of zoneIdentifierNames) {
+      await expect(
+        lstat(path.join(destination, 'demo', zoneIdentifierName))
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    }
     await expect(lstat(path.join(destination, '.DS_Store'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
-    expect((await lstat(path.join(destination, 'demo', 'run.sh'))).mode & 0o777).toBe(0o755);
+    if (process.platform !== 'win32') {
+      expect((await lstat(path.join(destination, 'demo', 'run.sh'))).mode & 0o777).toBe(0o755);
+    }
   });
 
   it('rejects sensitive files in skills', async () => {
@@ -377,8 +390,10 @@ describe('safe synchronization', () => {
     await syncLocalToRepo(plan, null);
 
     expect(await readFile(destination, 'utf8')).toBe(content);
-    expect((await lstat(destination)).mode & 0o777).toBe(0o600);
-    expect((await lstat(path.dirname(destination))).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') {
+      expect((await lstat(destination)).mode & 0o777).toBe(0o600);
+      expect((await lstat(path.dirname(destination))).mode & 0o777).toBe(0o700);
+    }
   });
 
   it('rejects malformed prompt JSONL before it reaches the repository', async () => {

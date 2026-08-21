@@ -501,7 +501,8 @@ function classifySkillPath(
   ]);
   if (isDirectory && ignoredDirectories.has(name)) return 'ignore';
   if (name.endsWith('.pyc') || name.endsWith('.pyo')) return 'ignore';
-  if (name.endsWith(':zone.identifier') || name === '.ds_store') return 'ignore';
+  const normalizedMetadataName = name.replace(/[\uF03A\uFF1A]/g, ':');
+  if (normalizedMetadataName.endsWith(':zone.identifier') || name === '.ds_store') return 'ignore';
 
   const sensitiveDirectories = new Set(['.gnupg', '.ssh', 'private', 'secrets']);
   if (lowerSegments.some((segment) => sensitiveDirectories.has(segment))) return 'reject';

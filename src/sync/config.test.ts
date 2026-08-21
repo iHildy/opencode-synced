@@ -182,8 +182,10 @@ describe('secure local files', () => {
         includeSkills: true,
       });
 
-      expect((await lstat(locations.syncConfigPath)).mode & 0o777).toBe(0o600);
-      expect((await lstat(path.dirname(locations.syncConfigPath))).mode & 0o777).toBe(0o700);
+      if (process.platform !== 'win32') {
+        expect((await lstat(locations.syncConfigPath)).mode & 0o777).toBe(0o600);
+        expect((await lstat(path.dirname(locations.syncConfigPath))).mode & 0o777).toBe(0o700);
+      }
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -200,8 +202,10 @@ describe('secure local files', () => {
         lastPull: 'pull-time',
         lastPush: 'push-time',
       });
-      expect((await lstat(locations.statePath)).mode & 0o777).toBe(0o600);
-      expect((await lstat(path.dirname(locations.statePath))).mode & 0o777).toBe(0o700);
+      if (process.platform !== 'win32') {
+        expect((await lstat(locations.statePath)).mode & 0o777).toBe(0o600);
+        expect((await lstat(path.dirname(locations.statePath))).mode & 0o777).toBe(0o700);
+      }
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

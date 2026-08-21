@@ -140,7 +140,7 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
       includeModelSelectors: tool.schema
         .boolean()
         .optional()
-        .describe('Sync main-model.txt and cheap-model.txt'),
+        .describe('Sync main-model.txt, cheap-model.txt, and frontier-model.txt'),
       acknowledgePlaintextPromptRisk: tool.schema
         .boolean()
         .optional()

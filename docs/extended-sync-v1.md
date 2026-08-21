@@ -15,7 +15,7 @@ The fork may synchronize only these paths:
 - `skills/`, excluding generated cache and platform metadata
 - prompt history and prompt stash as plaintext in a private repository
 - the `favorite` projection from `model.json`
-- `main-model.txt` and `cheap-model.txt`
+- `main-model.txt`, `cheap-model.txt`, and `frontier-model.txt`
 
 The following remain local and are rejected when explicitly enabled:
 
@@ -43,6 +43,9 @@ This policy uses operation order, never wall-clock timestamps.
   (`*:Zone.Identifier`, `.DS_Store`) are excluded.
 - Files are staged and atomically renamed instead of overwriting live files in
   place. Directory replacement must preserve a rollback copy until completion.
+- On Windows, sync locations follow OpenCode's XDG-compatible `%USERPROFILE%\.config`,
+  `%USERPROFILE%\.local\share`, and `%USERPROFILE%\.local\state` roots instead of
+  native `APPDATA` and `LOCALAPPDATA` roots.
 - Generated local state and overrides use mode `0600`; their parent directory uses
   mode `0700`.
 - Secrets, sessions, sync configuration, and overrides are never part of a plan.

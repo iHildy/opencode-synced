@@ -24,12 +24,14 @@ describe('SyncService local-wins integration', () => {
   it('does not wait for TUI to exist when startup sync is not configured', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-synced-startup-'));
     tempDirs.push(root);
-    process.env.HOME = path.join(root, 'home');
-    delete process.env.XDG_CONFIG_HOME;
-    delete process.env.XDG_DATA_HOME;
-    delete process.env.XDG_STATE_HOME;
+    const home = path.join(root, 'home');
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    process.env.XDG_CONFIG_HOME = path.join(root, 'xdg-config');
+    process.env.XDG_DATA_HOME = path.join(root, 'xdg-data');
+    process.env.XDG_STATE_HOME = path.join(root, 'xdg-state');
     delete process.env.opencode_config_dir;
-    await mkdir(process.env.HOME, { recursive: true });
+    await mkdir(home, { recursive: true });
     const client = {
       app: { log: async () => ({}) },
       tui: { showToast: () => new Promise(() => {}) },
@@ -53,13 +55,14 @@ describe('SyncService local-wins integration', () => {
     const remoteWriter = path.join(root, 'remote-writer');
     await mkdir(home, { recursive: true });
     process.env.HOME = home;
-    delete process.env.XDG_CONFIG_HOME;
-    delete process.env.XDG_DATA_HOME;
-    delete process.env.XDG_STATE_HOME;
+    process.env.USERPROFILE = home;
+    process.env.XDG_CONFIG_HOME = path.join(root, 'xdg-config');
+    process.env.XDG_DATA_HOME = path.join(root, 'xdg-data');
+    process.env.XDG_STATE_HOME = path.join(root, 'xdg-state');
     delete process.env.opencode_config_dir;
 
     await run('git', ['init', '--bare', origin]);
-    await run('git', ['clone', origin, seed]);
+    await run('git', ['-c', 'core.autocrlf=false', 'clone', origin, seed]);
     await configureGit(seed);
     await mkdir(path.join(seed, 'config'), { recursive: true });
     await writeFile(path.join(seed, 'config', 'AGENTS.md'), 'base-agents\n');
@@ -72,7 +75,7 @@ describe('SyncService local-wins integration', () => {
 
     const locations = resolveSyncLocations();
     await mkdir(path.dirname(locations.defaultRepoDir), { recursive: true });
-    await run('git', ['clone', origin, locations.defaultRepoDir]);
+    await run('git', ['-c', 'core.autocrlf=false', 'clone', origin, locations.defaultRepoDir]);
     await configureGit(locations.defaultRepoDir);
     await mkdir(locations.configRoot, { recursive: true });
     await writeFile(path.join(locations.configRoot, 'AGENTS.md'), 'base-agents\n');
@@ -84,7 +87,7 @@ describe('SyncService local-wins integration', () => {
 
     await writeFile(path.join(locations.configRoot, 'AGENTS.md'), 'local-agents\n');
 
-    await run('git', ['clone', origin, remoteWriter]);
+    await run('git', ['-c', 'core.autocrlf=false', 'clone', origin, remoteWriter]);
     await configureGit(remoteWriter);
     await writeFile(path.join(remoteWriter, 'config', 'AGENTS.md'), 'remote-agents\n');
     await writeFile(path.join(remoteWriter, 'config', 'opencode.json'), '{"theme":"remote"}\n');
@@ -112,7 +115,10 @@ describe('SyncService local-wins integration', () => {
     const rollbackDirs = await readdir(rollbackBase);
     expect(rollbackDirs).toHaveLength(1);
     expect(
-      await readFile(path.join(rollbackBase, rollbackDirs[0], 'config', 'AGENTS.md'), 'utf8')
+      (await readFile(path.join(rollbackBase, rollbackDirs[0], 'config', 'AGENTS.md'), 'utf8')).replace(
+        /\r\n/g,
+        '\n'
+      )
     ).toBe('remote-agents\n');
 
     expect(await loadState(locations)).toMatchObject({ lastOutcome: 'pushed' });
@@ -144,7 +150,7 @@ describe('SyncService local-wins integration', () => {
     expect(await readFile(path.join(locations.configRoot, 'AGENTS.md'), 'utf8')).toBe(
       'pending-local-agents\n'
     );
-  });
+  }, 30_000);
 
   it('rejects an existing clone with a different origin', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-synced-origin-'));
@@ -154,16 +160,17 @@ describe('SyncService local-wins integration', () => {
     const configuredOrigin = path.join(root, 'configured-origin.git');
     await mkdir(home, { recursive: true });
     process.env.HOME = home;
-    delete process.env.XDG_CONFIG_HOME;
-    delete process.env.XDG_DATA_HOME;
-    delete process.env.XDG_STATE_HOME;
+    process.env.USERPROFILE = home;
+    process.env.XDG_CONFIG_HOME = path.join(root, 'xdg-config');
+    process.env.XDG_DATA_HOME = path.join(root, 'xdg-data');
+    process.env.XDG_STATE_HOME = path.join(root, 'xdg-state');
     delete process.env.opencode_config_dir;
     await run('git', ['init', '--bare', oldOrigin]);
     await run('git', ['init', '--bare', configuredOrigin]);
 
     const locations = resolveSyncLocations();
     await mkdir(path.dirname(locations.defaultRepoDir), { recursive: true });
-    await run('git', ['clone', oldOrigin, locations.defaultRepoDir]);
+    await run('git', ['-c', 'core.autocrlf=false', 'clone', oldOrigin, locations.defaultRepoDir]);
     await writeSyncConfig(locations, {
       repo: { url: configuredOrigin, branch: 'main' },
       includeModelFavorites: false,
@@ -208,6 +215,7 @@ function createShell(): PluginInput['$'] {
 async function configureGit(repo: string): Promise<void> {
   await run('git', ['-C', repo, 'config', 'user.name', 'Test User']);
   await run('git', ['-C', repo, 'config', 'user.email', 'test@example.invalid']);
+  await run('git', ['-C', repo, 'config', 'core.autocrlf', 'false']);
 }
 
 async function gitShow(repo: string, object: string): Promise<string> {
