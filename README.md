@@ -1,6 +1,7 @@
 # opencode-synced
 
-Sync global opencode configuration across machines via a GitHub repo, with optional secrets support for private repos.
+Sync global opencode configuration across machines through Git, with automatic GitHub setup and
+an explicit-URL path for pre-created remotes.
 
 ## Features
 
@@ -14,8 +15,9 @@ Sync global opencode configuration across machines via a GitHub repo, with optio
 
 ## Requirements
 
-- GitHub CLI (`gh`) installed and authenticated (`gh auth login`)
 - Git installed and available on PATH
+- GitHub CLI (`gh`) installed and authenticated (`gh auth login`) when using automatic GitHub
+  creation, discovery, or privacy verification
 
 ## Setup
 
@@ -52,6 +54,32 @@ If auto-detection fails, specify the repo name: `/sync-link my-opencode-config`
 
 After linking, restart opencode to apply the synced settings.
 
+### Pre-created non-GitHub remote
+
+Automatic creation and discovery remain GitHub-only. For GitLab, a self-hosted forge, or another
+Git server, create the remote first and pass its URL explicitly:
+
+```text
+/sync-init ssh://git@git.example.com/team/opencode-config.git
+/sync-link ssh://git@git.example.com/team/opencode-config.git
+```
+
+HTTPS, `ssh://`, SCP-style SSH (`git@host:team/repo.git`), `file://`, and absolute local bare
+repository paths are accepted. `/sync-init <url>` seeds a pre-created empty remote; use
+`/sync-link <url>` for a remote that already contains synced config. Set `repo.branch` explicitly
+when the remote's default branch cannot be detected.
+
+Authentication is delegated to Git. Configure a credential helper or SSH agent; embedded URL
+credentials, query parameters, and fragments are rejected so tokens cannot enter status output,
+logs, Git config, or the synced configuration file. Absolute local remotes are useful for testing
+or same-machine workflows but are not portable across computers.
+
+GitHub repository visibility is verified through `gh`. Other providers do not expose a common
+privacy check, so secrets, prompt history, and sessions fail closed by default. After independently
+confirming the exact remote is private, explicitly acknowledge it when enabling secrets. The
+acknowledgement is fingerprinted in local `sync-state.json`; it is not synced and is invalidated if
+the remote URL changes.
+
 ### Custom repo name or org
 
 You can specify a custom repo name or use an organization:
@@ -68,8 +96,8 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 ```jsonc
 {
   "repo": {
-    "owner": "your-org",
-    "name": "opencode-config",
+    // Use owner/name for GitHub automation, or url for a pre-created remote.
+    "url": "ssh://git@git.example.com/your-org/opencode-config.git",
     "branch": "main",
   },
   "includeSecrets": false,

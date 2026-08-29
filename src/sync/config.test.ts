@@ -13,6 +13,7 @@ import {
   normalizeSessionBackend,
   normalizeSyncConfig,
   parseJsonc,
+  sanitizeRepoUrl,
   stripOverrides,
 } from './config.js';
 
@@ -109,6 +110,35 @@ describe('normalizeSyncConfig', () => {
     expect(normalized.sessionBackend.turso.autoSetup).toBe(true);
   });
 
+  it('does not accept a synced privacy acknowledgement', () => {
+    const normalized = normalizeSyncConfig({
+      repo: {
+        url: 'ssh://git@git.example.com/team/config.git',
+        privateRemoteAcknowledged: true,
+      },
+    } as unknown as SyncConfig);
+
+    expect(normalized.repo).toEqual({
+      url: 'ssh://git@git.example.com/team/config.git',
+      branch: undefined,
+    });
+  });
+
+  it('treats an explicit URL as authoritative over owner/name metadata', () => {
+    const normalized = normalizeSyncConfig({
+      repo: {
+        url: 'ssh://git@gitlab.example/team/config.git',
+        owner: 'trusted-github-owner',
+        name: 'trusted-private-repo',
+      },
+    });
+
+    expect(normalized.repo).toEqual({
+      url: 'ssh://git@gitlab.example/team/config.git',
+      branch: undefined,
+    });
+  });
+
   it('normalizes turso backend settings', () => {
     const normalized = normalizeSyncConfig({
       includeSessions: true,
@@ -132,6 +162,37 @@ describe('normalizeSyncConfig', () => {
         autoSetup: false,
       },
     });
+  });
+});
+
+describe('sanitizeRepoUrl', () => {
+  it('accepts credential-free HTTPS, SSH, SCP, file, and absolute remotes', () => {
+    expect(sanitizeRepoUrl('https://gitlab.com/team/config.git')).toBe(
+      'https://gitlab.com/team/config.git'
+    );
+    expect(sanitizeRepoUrl('ssh://git@gitlab.com/team/config.git')).toBe(
+      'ssh://git@gitlab.com/team/config.git'
+    );
+    expect(sanitizeRepoUrl('git@gitlab.com:team/config.git')).toBe(
+      'git@gitlab.com:team/config.git'
+    );
+    expect(sanitizeRepoUrl('file:///tmp/config.git')).toBe('file:///tmp/config.git');
+    expect(sanitizeRepoUrl('/tmp/config.git')).toBe('/tmp/config.git');
+  });
+
+  it('rejects embedded credentials and URL parameters', () => {
+    expect(() => sanitizeRepoUrl('https://user:secret@gitlab.com/team/config.git')).toThrow(
+      'must not contain embedded credentials'
+    );
+    expect(() => sanitizeRepoUrl('https://gitlab.com/team/config.git?token=secret')).toThrow(
+      'must not contain embedded credentials'
+    );
+    expect(() => sanitizeRepoUrl('ssh://git:secret@gitlab.com/team/config.git')).toThrow(
+      'must not contain embedded passwords'
+    );
+    expect(() => sanitizeRepoUrl('https://gitlab.com/team/config.git\nsecret')).toThrow(
+      'control characters'
+    );
   });
 });
 
