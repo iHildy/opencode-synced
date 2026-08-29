@@ -133,14 +133,32 @@ export function expandHome(inputPath: string, homeDir: string): string {
 export function normalizePath(
   inputPath: string,
   homeDir: string,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  baseDir?: string
 ): string {
-  const expanded = expandHome(inputPath, homeDir);
-  const resolved = path.resolve(expanded);
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  let expanded = inputPath;
+  if (homeDir && inputPath === '~') {
+    expanded = homeDir;
+  } else if (homeDir && inputPath.startsWith('~/')) {
+    expanded = pathApi.join(homeDir, inputPath.slice(2));
+  }
+
+  const resolved = baseDir ? pathApi.resolve(baseDir, expanded) : pathApi.resolve(expanded);
   if (platform === 'win32') {
     return resolved.toLowerCase();
   }
   return resolved;
+}
+
+export function resolveExtraPath(
+  inputPath: string,
+  locations: SyncLocations,
+  platform: NodeJS.Platform = process.platform
+): string {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const configRoot = pathApi.join(locations.xdg.configDir, 'opencode');
+  return normalizePath(inputPath, locations.xdg.homeDir, platform, configRoot);
 }
 
 export function isSamePath(
@@ -303,7 +321,9 @@ export function buildSyncPlan(
     }
   }
 
-  const extraSecretPaths = config.includeSecrets ? config.extraSecretPaths : [];
+  const extraSecretPaths = config.includeSecrets
+    ? config.extraSecretPaths.map((entry) => resolveExtraPath(entry, locations, platform))
+    : [];
   const filteredExtraSecrets = usingSecretsBackend
     ? extraSecretPaths.filter(
         (entry) =>
@@ -312,26 +332,16 @@ export function buildSyncPlan(
       )
     : extraSecretPaths;
 
-  const extraSecrets = buildExtraPathPlan(
-    filteredExtraSecrets,
-    locations,
-    repoExtraDir,
-    manifestPath,
-    platform
-  );
+  const extraSecrets = buildExtraPathPlan(filteredExtraSecrets, repoExtraDir, manifestPath);
 
-  const extraConfigPaths = (config.extraConfigPaths ?? []).filter(
-    (entry) =>
-      !items.some((item) => isSamePath(entry, item.localPath, locations.xdg.homeDir, platform))
-  );
+  const extraConfigPaths = (config.extraConfigPaths ?? [])
+    .map((entry) => resolveExtraPath(entry, locations, platform))
+    .filter(
+      (entry) =>
+        !items.some((item) => isSamePath(entry, item.localPath, locations.xdg.homeDir, platform))
+    );
 
-  const extraConfigs = buildExtraPathPlan(
-    extraConfigPaths,
-    locations,
-    repoConfigExtraDir,
-    configManifestPath,
-    platform
-  );
+  const extraConfigs = buildExtraPathPlan(extraConfigPaths, repoConfigExtraDir, configManifestPath);
 
   return {
     items,
@@ -344,23 +354,17 @@ export function buildSyncPlan(
 }
 
 function buildExtraPathPlan(
-  inputPaths: string[] | undefined,
-  locations: SyncLocations,
+  sourcePaths: string[],
   repoExtraDir: string,
-  manifestPath: string,
-  platform: NodeJS.Platform
+  manifestPath: string
 ): ExtraPathPlan {
-  const allowlist = (inputPaths ?? []).map((entry) =>
-    normalizePath(entry, locations.xdg.homeDir, platform)
-  );
-
-  const entries = allowlist.map((sourcePath) => ({
+  const entries = sourcePaths.map((sourcePath) => ({
     sourcePath,
     repoPath: path.join(repoExtraDir, encodeExtraPath(sourcePath)),
   }));
 
   return {
-    allowlist,
+    allowlist: sourcePaths,
     manifestPath,
     entries,
   };

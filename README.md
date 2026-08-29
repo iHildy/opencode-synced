@@ -100,7 +100,7 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 - `~/.config/opencode/agent/`, `command/`, `mode/`, `tool/`, `themes/`, `plugin/`, `skills/`
 - `~/.agents/`
 - `~/.local/state/opencode/model.json` (model favorites)
-- Any additional paths in `extraConfigPaths` (allowlist, files or folders). You do not need to include default paths like `~/.config/opencode/skills` or `~/.agents`.
+- Any additional paths in `extraConfigPaths` (allowlist, files or folders). Relative paths resolve from `$XDG_CONFIG_HOME/opencode` (normally `~/.config/opencode`). You do not need to include default paths like `~/.config/opencode/skills` or `~/.agents`.
 
 Disable default directory sync by setting:
 - `"includeOpencodeSkills": false` to skip `~/.config/opencode/skills/`
@@ -112,7 +112,7 @@ Enable secrets with `/sync-enable-secrets` or set `"includeSecrets": true`:
 
 - `~/.local/share/opencode/auth.json`
 - `~/.local/share/opencode/mcp-auth.json`
-- Any extra paths in `extraSecretPaths` (allowlist, files or folders)
+- Any extra paths in `extraSecretPaths` (allowlist, files or folders). Relative paths resolve from `$XDG_CONFIG_HOME/opencode` (normally `~/.config/opencode`).
 
 MCP API keys stored inside `opencode.json(c)` are **not** committed by default. To allow them
 in a private repo, set `"includeMcpSecrets": true` (requires `includeSecrets`).

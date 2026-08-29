@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { syncLocalToRepo, syncRepoToLocal } from './apply.js';
+import type { SyncConfig } from './config.js';
+import { normalizeSyncConfig } from './config.js';
 import type { ExtraPathPlan, SyncItem, SyncPlan } from './paths.js';
+import { buildSyncPlan, resolveSyncLocations } from './paths.js';
 
 const EMPTY_EXTRA_PLAN: ExtraPathPlan = {
   allowlist: [],
@@ -273,6 +276,137 @@ describe('syncRepoToLocal for session database', () => {
       await expect(fs.readFile(localDbPath, 'utf8')).resolves.toBe('repo-db-content');
       await expect(fs.stat(`${localDbPath}-wal`)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(fs.stat(`${localDbPath}-shm`)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+});
+
+describe('relative extra paths', () => {
+  it('syncs config and secret files and directories from an unrelated cwd', async () => {
+    await withTempDir(async (root) => {
+      const homeDir = path.join(root, 'home');
+      const configRoot = path.join(homeDir, '.config', 'opencode');
+      const repoRoot = path.join(root, 'repo');
+      const unrelatedCwd = path.join(root, 'unrelated-cwd');
+      const configFile = path.join(configRoot, 'SOUL.md');
+      const configDirectory = path.join(configRoot, 'commands');
+      const secretFile = path.join(configRoot, 'credentials', 'token.json');
+      const secretDirectory = path.join(configRoot, 'private-agents');
+      await fs.mkdir(configDirectory, { recursive: true });
+      await fs.mkdir(path.dirname(secretFile), { recursive: true });
+      await fs.mkdir(secretDirectory, { recursive: true });
+      await fs.mkdir(unrelatedCwd, { recursive: true });
+      await fs.writeFile(configFile, 'config-file', 'utf8');
+      await fs.writeFile(path.join(configDirectory, 'custom.md'), 'config-directory', 'utf8');
+      await fs.writeFile(secretFile, 'secret-file', 'utf8');
+      await fs.writeFile(path.join(secretDirectory, 'private.md'), 'secret-directory', 'utf8');
+
+      const locations = resolveSyncLocations({ HOME: homeDir }, 'linux');
+      const config: SyncConfig = {
+        repo: { owner: 'acme', name: 'config' },
+        includeSecrets: true,
+        extraConfigPaths: ['SOUL.md', 'commands'],
+        extraSecretPaths: ['credentials/token.json', 'private-agents'],
+      };
+      const originalCwd = process.cwd();
+
+      try {
+        process.chdir(unrelatedCwd);
+        const plan = buildSyncPlan(normalizeSyncConfig(config), locations, repoRoot, 'linux');
+        await syncLocalToRepo(plan, null);
+
+        const configManifest = JSON.parse(
+          await fs.readFile(plan.extraConfigs.manifestPath, 'utf8')
+        ) as {
+          entries: Array<{ sourcePath: string; repoPath: string; type: 'file' | 'dir' }>;
+        };
+        const secretManifest = JSON.parse(
+          await fs.readFile(plan.extraSecrets.manifestPath, 'utf8')
+        ) as {
+          entries: Array<{ sourcePath: string; repoPath: string; type: 'file' | 'dir' }>;
+        };
+
+        expect(configManifest.entries.map((entry) => [entry.sourcePath, entry.type])).toEqual([
+          [configFile, 'file'],
+          [configDirectory, 'dir'],
+        ]);
+        expect(secretManifest.entries.map((entry) => [entry.sourcePath, entry.type])).toEqual([
+          [secretFile, 'file'],
+          [secretDirectory, 'dir'],
+        ]);
+
+        const configRepoPaths = new Map(
+          configManifest.entries.map((entry) => [
+            entry.sourcePath,
+            path.join(repoRoot, entry.repoPath),
+          ])
+        );
+        const secretRepoPaths = new Map(
+          secretManifest.entries.map((entry) => [
+            entry.sourcePath,
+            path.join(repoRoot, entry.repoPath),
+          ])
+        );
+        await expect(fs.readFile(configRepoPaths.get(configFile) ?? '', 'utf8')).resolves.toBe(
+          'config-file'
+        );
+        await expect(
+          fs.readFile(path.join(configRepoPaths.get(configDirectory) ?? '', 'custom.md'), 'utf8')
+        ).resolves.toBe('config-directory');
+        await expect(fs.readFile(secretRepoPaths.get(secretFile) ?? '', 'utf8')).resolves.toBe(
+          'secret-file'
+        );
+        await expect(
+          fs.readFile(path.join(secretRepoPaths.get(secretDirectory) ?? '', 'private.md'), 'utf8')
+        ).resolves.toBe('secret-directory');
+      } finally {
+        process.chdir(originalCwd);
+      }
+    });
+  });
+
+  it('does not apply a manifest source outside the resolved allowlist', async () => {
+    await withTempDir(async (root) => {
+      const homeDir = path.join(root, 'home');
+      const repoRoot = path.join(root, 'repo');
+      const locations = resolveSyncLocations({ HOME: homeDir }, 'linux');
+      const allowedPath = path.join(locations.configRoot, 'allowed.json');
+      const blockedPath = path.join(locations.configRoot, 'blocked.json');
+      const allowedRepoPath = path.join(repoRoot, 'config', 'extra', 'allowed.json');
+      const rogueRepoPath = path.join(repoRoot, 'config', 'extra', 'rogue.json');
+      await fs.mkdir(path.dirname(rogueRepoPath), { recursive: true });
+      await fs.writeFile(allowedRepoPath, 'allowed-copy', 'utf8');
+      await fs.writeFile(rogueRepoPath, 'must-not-copy', 'utf8');
+
+      const config: SyncConfig = {
+        repo: { owner: 'acme', name: 'config' },
+        includeSecrets: false,
+        extraConfigPaths: ['allowed.json'],
+      };
+      const plan = buildSyncPlan(normalizeSyncConfig(config), locations, repoRoot, 'linux');
+      await fs.mkdir(path.dirname(plan.extraConfigs.manifestPath), { recursive: true });
+      await fs.writeFile(
+        plan.extraConfigs.manifestPath,
+        JSON.stringify({
+          entries: [
+            {
+              sourcePath: allowedPath,
+              repoPath: path.relative(repoRoot, allowedRepoPath),
+              type: 'file',
+            },
+            {
+              sourcePath: blockedPath,
+              repoPath: path.relative(repoRoot, rogueRepoPath),
+              type: 'file',
+            },
+          ],
+        }),
+        'utf8'
+      );
+
+      await syncRepoToLocal(plan, null);
+
+      await expect(fs.readFile(allowedPath, 'utf8')).resolves.toBe('allowed-copy');
+      await expect(fs.stat(blockedPath)).rejects.toMatchObject({ code: 'ENOENT' });
     });
   });
 });
