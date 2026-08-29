@@ -96,6 +96,11 @@ describe('buildSyncPlan', () => {
       includeSecrets: false,
       extraConfigPaths: [
         `${locations.configRoot}/agent`,
+        `${locations.configRoot}/agents`,
+        `${locations.configRoot}/commands`,
+        `${locations.configRoot}/modes`,
+        `${locations.configRoot}/tools`,
+        `${locations.configRoot}/plugins`,
         `${locations.configRoot}/opencode.json`,
         customConfigPath,
       ],
@@ -104,6 +109,57 @@ describe('buildSyncPlan', () => {
     const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
 
     expect(plan.extraConfigs.allowlist).toEqual([customConfigPath]);
+  });
+
+  it('includes canonical plural and legacy singular config directories exactly once', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      includeOpencodeSkills: false,
+      includeAgentsDir: false,
+    };
+
+    const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
+    const directoryNames = plan.items
+      .filter((item) => item.type === 'dir' && item.localPath.startsWith(locations.configRoot))
+      .map((item) => item.localPath.slice(locations.configRoot.length + 1));
+
+    expect(directoryNames).toEqual([
+      'agent',
+      'agents',
+      'command',
+      'commands',
+      'mode',
+      'modes',
+      'tool',
+      'tools',
+      'themes',
+      'plugin',
+      'plugins',
+    ]);
+    expect(new Set(plan.items.map((item) => item.localPath)).size).toBe(plan.items.length);
+    expect(new Set(plan.items.map((item) => item.repoPath)).size).toBe(plan.items.length);
+  });
+
+  it('filters plural defaults from extra config paths case-insensitively on Windows', () => {
+    const env = {
+      USERPROFILE: 'C:\\Users\\Test',
+      APPDATA: 'C:\\Users\\Test\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\Test\\AppData\\Local',
+    } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'win32');
+    const pluralAgentsPath = `${locations.configRoot}/agents`;
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      extraConfigPaths: [pluralAgentsPath.toUpperCase()],
+    };
+
+    const plan = buildSyncPlan(normalizeSyncConfig(config), locations, 'C:\\repo', 'win32');
+
+    expect(plan.extraConfigs.allowlist).toEqual([]);
   });
 
   it('includes skills directory in default sync items', () => {
