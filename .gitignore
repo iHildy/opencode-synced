@@ -10,5 +10,6 @@ coverage/
 .bun/
 .bun.lockb
 .memory/
+__pycache__/
 opencode-plugin-template/
 opencode-docs-*/

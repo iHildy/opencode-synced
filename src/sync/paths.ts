@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import type { NormalizedSyncConfig, SyncConfig } from './config.js';
-import { hasSecretsBackend } from './config.js';
+import { hasSecretsBackend, isTursoSessionBackend } from './config.js';
 
 export interface XdgPaths {
   homeDir: string;
@@ -27,6 +27,7 @@ export interface SyncItem {
   type: SyncItemType;
   isSecret: boolean;
   isConfigFile: boolean;
+  preserveWhenMissing?: boolean;
 }
 
 export interface ExtraPathPlan {
@@ -51,10 +52,25 @@ const DEFAULT_SYNC_CONFIG_NAME = 'opencode-synced.jsonc';
 const DEFAULT_OVERRIDES_NAME = 'opencode-synced.overrides.jsonc';
 const DEFAULT_STATE_NAME = 'sync-state.json';
 
-const CONFIG_DIRS = ['agent', 'command', 'mode', 'tool', 'themes', 'plugin'];
+const CONFIG_DIRS = [
+  'agent',
+  'agents',
+  'command',
+  'commands',
+  'mode',
+  'modes',
+  'tool',
+  'tools',
+  'themes',
+  'plugin',
+  'plugins',
+];
 const SESSION_DIRS = ['storage/session', 'storage/message', 'storage/part', 'storage/session_diff'];
+const SESSION_DB_FILE = 'opencode.db';
 const PROMPT_STASH_FILES = ['prompt-stash.jsonl', 'prompt-history.jsonl'];
 const MODEL_FAVORITES_FILE = 'model.json';
+const SKILLS_DIR = 'skills';
+const HOME_AGENTS_DIR = '.agents';
 
 export function resolveHomeDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -214,6 +230,26 @@ export function buildSyncPlan(
     });
   }
 
+  if (config.includeOpencodeSkills !== false) {
+    items.push({
+      localPath: path.join(configRoot, SKILLS_DIR),
+      repoPath: path.join(repoConfigRoot, SKILLS_DIR),
+      type: 'dir',
+      isSecret: false,
+      isConfigFile: false,
+    });
+  }
+
+  if (config.includeAgentsDir !== false) {
+    items.push({
+      localPath: path.join(locations.xdg.homeDir, HOME_AGENTS_DIR),
+      repoPath: path.join(repoConfigRoot, HOME_AGENTS_DIR),
+      type: 'dir',
+      isSecret: false,
+      isConfigFile: false,
+    });
+  }
+
   if (config.includeModelFavorites !== false) {
     items.push({
       localPath: path.join(stateRoot, MODEL_FAVORITES_FILE),
@@ -244,7 +280,16 @@ export function buildSyncPlan(
       );
     }
 
-    if (config.includeSessions) {
+    if (config.includeSessions && !isTursoSessionBackend(config)) {
+      items.push({
+        localPath: path.join(dataRoot, SESSION_DB_FILE),
+        repoPath: path.join(repoDataRoot, SESSION_DB_FILE),
+        type: 'file',
+        isSecret: true,
+        isConfigFile: false,
+        preserveWhenMissing: true,
+      });
+
       for (const dirName of SESSION_DIRS) {
         items.push({
           localPath: path.join(dataRoot, dirName),
@@ -252,6 +297,7 @@ export function buildSyncPlan(
           type: 'dir',
           isSecret: true,
           isConfigFile: false,
+          preserveWhenMissing: true,
         });
       }
     }
@@ -287,7 +333,8 @@ export function buildSyncPlan(
   );
 
   const extraConfigPaths = (config.extraConfigPaths ?? []).filter(
-    (entry) => !isSamePath(entry, locations.syncConfigPath, locations.xdg.homeDir, platform)
+    (entry) =>
+      !items.some((item) => isSamePath(entry, item.localPath, locations.xdg.homeDir, platform))
   );
 
   const extraConfigs = buildExtraPathPlan(

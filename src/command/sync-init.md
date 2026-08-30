@@ -2,13 +2,20 @@
 description: Initialize opencode-synced configuration
 ---
 
-Use the opencode_sync tool with command "init".
-The repo will be created automatically if it doesn't exist (private by default).
-Default repo name is "my-opencode-config" with owner auto-detected from GitHub CLI.
-If the user wants a custom repo name, pass name="custom-name".
-If the user wants an org-owned repo, pass owner="org-name".
-If the user wants a public repo, pass private=false.
-Include includeSecrets if the user explicitly opts in.
-Include includeMcpSecrets only if they want MCP secrets committed to a private repo.
-If the user supplies extra config paths, pass extraConfigPaths.
-Model favorites sync is enabled by default; set includeModelFavorites=false to disable.
+You MUST call the `opencode_sync` tool with `command="init"`.
+Do not answer with plain text only.
+
+Argument handling:
+- If `$ARGUMENTS` is non-empty, pass `repo="$ARGUMENTS"`.
+- If `$ARGUMENTS` is empty, let the tool choose defaults.
+
+Rules:
+- Keep repo private unless the user explicitly asked for public.
+- A URL or absolute local path refers to a pre-created Git remote; do not claim it can be created or discovered automatically.
+- Never put credentials in a repo URL. Authentication must be configured through Git credential helpers or SSH.
+- Pass `acknowledgePrivateRemote=true` only when the user explicitly confirms that a non-GitHub remote is private and may receive sensitive sync data.
+- Include `includeSecrets` only if explicitly requested.
+- Include `includeMcpSecrets` only if explicitly requested and secrets are enabled.
+- Include `includeOpencodeSkills` only if explicitly requested.
+- Include `includeAgentsDir` only if explicitly requested.
+- Include `extraConfigPaths` only if explicitly provided.

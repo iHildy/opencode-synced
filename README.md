@@ -1,6 +1,7 @@
 # opencode-synced
 
-Sync global opencode configuration across machines via a GitHub repo, with optional secrets support for private repos.
+Sync global opencode configuration across machines through Git, with automatic GitHub setup and
+an explicit-URL path for pre-created remotes.
 
 ## Features
 
@@ -14,8 +15,9 @@ Sync global opencode configuration across machines via a GitHub repo, with optio
 
 ## Requirements
 
-- GitHub CLI (`gh`) installed and authenticated (`gh auth login`)
 - Git installed and available on PATH
+- GitHub CLI (`gh`) installed and authenticated (`gh auth login`) when using automatic GitHub
+  creation, discovery, or privacy verification
 
 ## Setup
 
@@ -52,6 +54,32 @@ If auto-detection fails, specify the repo name: `/sync-link my-opencode-config`
 
 After linking, restart opencode to apply the synced settings.
 
+### Pre-created non-GitHub remote
+
+Automatic creation and discovery remain GitHub-only. For GitLab, a self-hosted forge, or another
+Git server, create the remote first and pass its URL explicitly:
+
+```text
+/sync-init ssh://git@git.example.com/team/opencode-config.git
+/sync-link ssh://git@git.example.com/team/opencode-config.git
+```
+
+HTTPS, `ssh://`, SCP-style SSH (`git@host:team/repo.git`), `file://`, and absolute local bare
+repository paths are accepted. `/sync-init <url>` seeds a pre-created empty remote; use
+`/sync-link <url>` for a remote that already contains synced config. Set `repo.branch` explicitly
+when the remote's default branch cannot be detected.
+
+Authentication is delegated to Git. Configure a credential helper or SSH agent; embedded URL
+credentials, query parameters, and fragments are rejected so tokens cannot enter status output,
+logs, Git config, or the synced configuration file. Absolute local remotes are useful for testing
+or same-machine workflows but are not portable across computers.
+
+GitHub repository visibility is verified through `gh`. Other providers do not expose a common
+privacy check, so secrets, prompt history, and sessions fail closed by default. After independently
+confirming the exact remote is private, explicitly acknowledge it when enabling secrets. The
+acknowledgement is fingerprinted in local `sync-state.json`; it is not synced and is invalidated if
+the remote URL changes.
+
 ### Custom repo name or org
 
 You can specify a custom repo name or use an organization:
@@ -68,15 +96,24 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 ```jsonc
 {
   "repo": {
-    "owner": "your-org",
-    "name": "opencode-config",
+    // Use owner/name for GitHub automation, or url for a pre-created remote.
+    "url": "ssh://git@git.example.com/your-org/opencode-config.git",
     "branch": "main",
   },
   "includeSecrets": false,
   "includeMcpSecrets": false,
   "includeSessions": false,
+  "sessionBackend": {
+    "type": "git",
+    "turso": {
+      "syncIntervalSec": 15,
+      "autoSetup": true,
+    },
+  },
   "includePromptStash": false,
   "includeModelFavorites": true,
+  "includeOpencodeSkills": true,
+  "includeAgentsDir": true,
   "extraSecretPaths": [],
   "extraConfigPaths": [],
 }
@@ -88,9 +125,14 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 
 - `~/.config/opencode/opencode.json` and `opencode.jsonc`
 - `~/.config/opencode/AGENTS.md`
-- `~/.config/opencode/agent/`, `command/`, `mode/`, `tool/`, `themes/`, `plugin/`
+- `~/.config/opencode/agent/`, `command/`, `mode/`, `tool/`, `themes/`, `plugin/`, `skills/`
+- `~/.agents/`
 - `~/.local/state/opencode/model.json` (model favorites)
-- Any extra paths in `extraConfigPaths` (allowlist, files or folders)
+- Any additional paths in `extraConfigPaths` (allowlist, files or folders). You do not need to include default paths like `~/.config/opencode/skills` or `~/.agents`.
+
+Disable default directory sync by setting:
+- `"includeOpencodeSkills": false` to skip `~/.config/opencode/skills/`
+- `"includeAgentsDir": false` to skip `~/.agents/`
 
 ### Secrets (private repos only)
 
@@ -105,22 +147,58 @@ in a private repo, set `"includeMcpSecrets": true` (requires `includeSecrets`).
 
 ### Sessions (private repos only)
 
-Sync your opencode sessions (conversation history from `/sessions`) across machines by setting `"includeSessions": true`. This requires `includeSecrets` to also be enabled since sessions may contain sensitive data.
+Session sync remains opt-in via `"includeSessions": true` (and requires `"includeSecrets": true`).
+Session backend defaults to Git for backward compatibility. Turso is recommended for users running
+multiple active machines concurrently.
 
 ```jsonc
 {
   "repo": { ... },
   "includeSecrets": true,
-  "includeSessions": true
+  "includeSessions": true,
+  "sessionBackend": {
+    "type": "git", // or "turso"
+    "turso": {
+      "database": "my-opencode-config-sessions", // optional
+      "url": "libsql://...", // optional
+      "syncIntervalSec": 15, // default 15
+      "autoSetup": true, // default true
+    },
+  },
 }
 ```
 
-Synced session data:
+#### Git backend (`sessionBackend.type = "git"`, default)
 
-- `~/.local/share/opencode/storage/session/` - Session files
-- `~/.local/share/opencode/storage/message/` - Message history
-- `~/.local/share/opencode/storage/part/` - Message parts
-- `~/.local/share/opencode/storage/session_diff/` - Session diffs
+Best-effort session artifact sync via Git paths:
+
+- `~/.local/share/opencode/opencode.db`
+- `~/.local/share/opencode/opencode.db-wal` and `~/.local/share/opencode/opencode.db-shm`
+- `~/.local/share/opencode/storage/session/`
+- `~/.local/share/opencode/storage/message/`
+- `~/.local/share/opencode/storage/part/`
+- `~/.local/share/opencode/storage/session_diff/`
+
+This mode can conflict with concurrent writers.
+
+#### Turso backend (`sessionBackend.type = "turso"`)
+
+Concurrent-safe snapshot backend for sessions:
+
+- Session artifacts are **not** synced through Git paths.
+- Config + secrets continue using the normal Git sync flow.
+- Startup performs a Turso session pull before regular config sync.
+- Background loop runs `pull -> push -> pull` on the configured interval.
+- Manual `/sync-pull` and `/sync-push` trigger a foreground session sync cycle too.
+
+Turso setup is machine-local and idempotent:
+
+- Auto-installs Turso CLI when needed (best effort).
+- Runs headless Turso login flow when needed.
+- Creates/reuses the Turso database + token.
+- Stores credentials in a local machine-only file (`0600`) outside the sync repo.
+
+After pulling session changes, restart opencode to ensure the latest session state is loaded.
 
 ### Prompt Stash (private repos only)
 
@@ -175,6 +253,10 @@ Env var naming rules:
 | `/sync-pull` | Fetch and apply remote config |
 | `/sync-push` | Commit and push local changes |
 | `/sync-enable-secrets` | Enable secrets sync (private repos only) |
+| `/sync-sessions-backend <git\|turso>` | Switch session backend |
+| `/sync-sessions-setup-turso` | Install/auth/provision Turso on this machine |
+| `/sync-sessions-migrate-turso` | Bootstrap + switch from Git session sync to Turso |
+| `/sync-sessions-cleanup-git` | Remove deprecated Git session artifacts after migration |
 | `/sync-resolve` | Auto-resolve uncommitted changes using AI |
 
 <details>
@@ -265,6 +347,52 @@ bun -e '
 - `bun run build`
 - `bun run test`
 - `bun run lint`
+
+## Codex Environment
+
+This repo includes a shared Codex local environment at:
+
+- `.codex/environments/environment.toml`
+- `scripts/setup-env.sh`
+- `scripts/e2e/github_two_instance.py`
+
+### Setup behavior
+
+The Codex environment just invokes `scripts/setup-env.sh`. Setup does:
+
+- `bun install` (idempotent)
+- creates runtime folders under `.memory/`
+- clones upstream opencode into `.memory/opencode-upstream/opencode` **only if missing**
+
+The upstream clone is local-only and is not auto-updated by setup.
+
+### Actions
+
+The environment exposes these actions in Codex:
+
+- `Check` -> `bun run check`
+- `Test` -> `bun test`
+- `Build` -> `bun run build`
+- `E2E GitHub (2 instances)` -> `python3 scripts/e2e/github_two_instance.py`
+
+### End-to-end test harness
+
+Run manually:
+
+```bash
+python3 scripts/e2e/github_two_instance.py
+```
+
+Helpful options:
+
+```bash
+python3 scripts/e2e/github_two_instance.py --help
+python3 scripts/e2e/github_two_instance.py --preflight-only
+python3 scripts/e2e/github_two_instance.py --keep-failed-repo
+```
+
+The harness runs two isolated opencode instances, uses a unique ephemeral private GitHub repo,
+and writes artifacts to `.memory/e2e/runs/<run-id>/`.
 
 ### Local testing (production-like)
 

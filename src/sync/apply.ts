@@ -21,6 +21,9 @@ import { normalizePath } from './paths.js';
 
 type ExtraPathType = 'file' | 'dir';
 
+const SESSION_DB_NAME = 'opencode.db';
+const SESSION_DB_SIDECAR_SUFFIXES = ['-wal', '-shm'] as const;
+
 interface ExtraPathManifestItem {
   relativePath: string;
   type: ExtraPathType;
@@ -94,11 +97,13 @@ export async function syncLocalToRepo(
   for (const item of plan.items) {
     if (item.isConfigFile) {
       const sanitized = sanitizedConfigs.get(item.localPath);
-      await copyConfigForRepo(item, overridesForStrip, plan.repoRoot, sanitized);
+      await copyConfigForRepo(item, overridesForStrip, plan.repoRoot, sanitized, {
+        removeWhenMissing: !item.preserveWhenMissing,
+      });
       continue;
     }
 
-    await copyItem(item.localPath, item.repoPath, item.type, true);
+    await copyItem(item.localPath, item.repoPath, item.type, !item.preserveWhenMissing);
   }
 
   await writeExtraPathManifest(plan, plan.extraConfigs);
@@ -111,6 +116,15 @@ async function copyItem(
   type: SyncItem['type'],
   removeWhenMissing = false
 ): Promise<void> {
+  if (
+    type === 'file' &&
+    (path.basename(sourcePath) === SESSION_DB_NAME ||
+      path.basename(destinationPath) === SESSION_DB_NAME)
+  ) {
+    await copySessionDbBundle(sourcePath, destinationPath, removeWhenMissing);
+    return;
+  }
+
   if (!(await pathExists(sourcePath))) {
     if (removeWhenMissing) {
       await removePath(destinationPath);
@@ -131,10 +145,14 @@ async function copyConfigForRepo(
   item: SyncItem,
   overrides: Record<string, unknown> | null,
   repoRoot: string,
-  configOverride?: Record<string, unknown>
+  configOverride?: Record<string, unknown>,
+  options: { removeWhenMissing?: boolean } = {}
 ): Promise<void> {
+  const removeWhenMissing = options.removeWhenMissing ?? true;
   if (!(await pathExists(item.localPath))) {
-    await removePath(item.repoPath);
+    if (removeWhenMissing) {
+      await removePath(item.repoPath);
+    }
     return;
   }
 
@@ -196,6 +214,38 @@ async function copyFileWithMode(sourcePath: string, destinationPath: string): Pr
   await fs.mkdir(path.dirname(destinationPath), { recursive: true });
   await fs.copyFile(sourcePath, destinationPath);
   await chmodIfExists(destinationPath, stat.mode & 0o777);
+}
+
+async function copySessionDbBundle(
+  sourceDbPath: string,
+  destinationDbPath: string,
+  removeWhenMissing: boolean
+): Promise<void> {
+  if (!(await pathExists(sourceDbPath))) {
+    if (removeWhenMissing) {
+      await removePath(destinationDbPath);
+      await removeSessionDbSidecars(destinationDbPath);
+    }
+    return;
+  }
+
+  await copyFileWithMode(sourceDbPath, destinationDbPath);
+
+  for (const suffix of SESSION_DB_SIDECAR_SUFFIXES) {
+    const sourceSidecarPath = `${sourceDbPath}${suffix}`;
+    const destinationSidecarPath = `${destinationDbPath}${suffix}`;
+    if (await pathExists(sourceSidecarPath)) {
+      await copyFileWithMode(sourceSidecarPath, destinationSidecarPath);
+      continue;
+    }
+    await removePath(destinationSidecarPath);
+  }
+}
+
+async function removeSessionDbSidecars(dbPath: string): Promise<void> {
+  for (const suffix of SESSION_DB_SIDECAR_SUFFIXES) {
+    await removePath(`${dbPath}${suffix}`);
+  }
 }
 
 async function copyDirRecursive(sourcePath: string, destinationPath: string): Promise<void> {
