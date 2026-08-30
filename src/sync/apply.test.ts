@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { syncLocalToRepo, syncRepoToLocal } from './apply.js';
+import { normalizeSyncConfig } from './config.js';
 import type { ExtraPathPlan, SyncItem, SyncPlan } from './paths.js';
+import { buildSyncPlan, resolveSyncLocations } from './paths.js';
 
 const EMPTY_EXTRA_PLAN: ExtraPathPlan = {
   allowlist: [],
@@ -274,6 +276,48 @@ describe('syncRepoToLocal for session database', () => {
       await expect(fs.readFile(localDbPath, 'utf8')).resolves.toBe('repo-db-content');
       await expect(fs.stat(`${localDbPath}-wal`)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(fs.stat(`${localDbPath}-shm`)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+});
+
+describe('syncing plural OpenCode config directories', () => {
+  it('copies canonical plural directories between isolated homes', async () => {
+    await withTempDir(async (root) => {
+      const machineAHome = path.join(root, 'machine-a');
+      const machineBHome = path.join(root, 'machine-b');
+      const repoRoot = path.join(root, 'repo');
+      const machineALocations = resolveSyncLocations({ HOME: machineAHome }, 'linux');
+      const machineBLocations = resolveSyncLocations({ HOME: machineBHome }, 'linux');
+      const config = normalizeSyncConfig({
+        repo: { owner: 'acme', name: 'config' },
+        includeSecrets: false,
+        includeOpencodeSkills: false,
+        includeAgentsDir: false,
+        includeModelFavorites: false,
+      });
+      const sentinels: Record<string, string> = {
+        'agents/reviewer.md': 'plural-agent',
+        'commands/release.md': 'plural-command',
+        'modes/focus.md': 'plural-mode',
+        'plugins/local.ts': 'plural-plugin',
+        'tools/lint.ts': 'plural-tool',
+      };
+
+      for (const [relativePath, content] of Object.entries(sentinels)) {
+        const sourcePath = path.join(machineALocations.configRoot, relativePath);
+        await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+        await fs.writeFile(sourcePath, content, 'utf8');
+      }
+
+      const machineAPlan = buildSyncPlan(config, machineALocations, repoRoot, 'linux');
+      const machineBPlan = buildSyncPlan(config, machineBLocations, repoRoot, 'linux');
+      await syncLocalToRepo(machineAPlan, null);
+      await syncRepoToLocal(machineBPlan, null);
+
+      for (const [relativePath, content] of Object.entries(sentinels)) {
+        const destinationPath = path.join(machineBLocations.configRoot, relativePath);
+        await expect(fs.readFile(destinationPath, 'utf8')).resolves.toBe(content);
+      }
     });
   });
 });

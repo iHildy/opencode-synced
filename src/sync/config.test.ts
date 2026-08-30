@@ -13,6 +13,7 @@ import {
   normalizeSessionBackend,
   normalizeSyncConfig,
   parseJsonc,
+  sanitizeRepoUrl,
   stripOverrides,
 } from './config.js';
 
@@ -56,6 +57,48 @@ describe('stripOverrides', () => {
     const stripped = stripOverrides(local, overrides, base);
 
     expect(stripped).toEqual({ theme: 'opencode', other: true });
+  });
+
+  it('strips override object keys missing from local config even when present in base', () => {
+    const base = {
+      mcp: { context7: { url: 'https://example.com' } },
+      server: { port: 8080, hostname: '0.0.0.0' },
+    };
+    const overrides = {
+      mcp: { context7: { headers: { apiKey: 'local-key' } } },
+      server: { port: 8080, hostname: '0.0.0.0' },
+    };
+    const local = {
+      mcp: { context7: { url: 'https://example.com', headers: { apiKey: 'local-key' } } },
+    };
+
+    const stripped = stripOverrides(local, overrides, base);
+
+    expect(stripped).not.toHaveProperty('server');
+    expect(stripped).toEqual({
+      mcp: { context7: { url: 'https://example.com' } },
+    });
+  });
+
+  it('strips override scalar keys missing from local config even when present in base', () => {
+    const base = { theme: 'dark', port: 3000 };
+    const overrides = { theme: 'light', port: 8080 };
+    const local = { theme: 'light' };
+
+    const stripped = stripOverrides(local, overrides, base);
+
+    expect(stripped).not.toHaveProperty('port');
+    expect(stripped).toEqual({ theme: 'dark' });
+  });
+
+  it('strips override keys from local when present in local and base', () => {
+    const base = { theme: 'dark', editor: 'vim' };
+    const overrides = { theme: 'light', editor: 'code' };
+    const local = { theme: 'light', editor: 'code', extra: true };
+
+    const stripped = stripOverrides(local, overrides, base);
+
+    expect(stripped).toEqual({ theme: 'dark', editor: 'vim', extra: true });
   });
 });
 
@@ -109,6 +152,35 @@ describe('normalizeSyncConfig', () => {
     expect(normalized.sessionBackend.turso.autoSetup).toBe(true);
   });
 
+  it('does not accept a synced privacy acknowledgement', () => {
+    const normalized = normalizeSyncConfig({
+      repo: {
+        url: 'ssh://git@git.example.com/team/config.git',
+        privateRemoteAcknowledged: true,
+      },
+    } as unknown as SyncConfig);
+
+    expect(normalized.repo).toEqual({
+      url: 'ssh://git@git.example.com/team/config.git',
+      branch: undefined,
+    });
+  });
+
+  it('treats an explicit URL as authoritative over owner/name metadata', () => {
+    const normalized = normalizeSyncConfig({
+      repo: {
+        url: 'ssh://git@gitlab.example/team/config.git',
+        owner: 'trusted-github-owner',
+        name: 'trusted-private-repo',
+      },
+    });
+
+    expect(normalized.repo).toEqual({
+      url: 'ssh://git@gitlab.example/team/config.git',
+      branch: undefined,
+    });
+  });
+
   it('normalizes turso backend settings', () => {
     const normalized = normalizeSyncConfig({
       includeSessions: true,
@@ -132,6 +204,37 @@ describe('normalizeSyncConfig', () => {
         autoSetup: false,
       },
     });
+  });
+});
+
+describe('sanitizeRepoUrl', () => {
+  it('accepts credential-free HTTPS, SSH, SCP, file, and absolute remotes', () => {
+    expect(sanitizeRepoUrl('https://gitlab.com/team/config.git')).toBe(
+      'https://gitlab.com/team/config.git'
+    );
+    expect(sanitizeRepoUrl('ssh://git@gitlab.com/team/config.git')).toBe(
+      'ssh://git@gitlab.com/team/config.git'
+    );
+    expect(sanitizeRepoUrl('git@gitlab.com:team/config.git')).toBe(
+      'git@gitlab.com:team/config.git'
+    );
+    expect(sanitizeRepoUrl('file:///tmp/config.git')).toBe('file:///tmp/config.git');
+    expect(sanitizeRepoUrl('/tmp/config.git')).toBe('/tmp/config.git');
+  });
+
+  it('rejects embedded credentials and URL parameters', () => {
+    expect(() => sanitizeRepoUrl('https://user:secret@gitlab.com/team/config.git')).toThrow(
+      'must not contain embedded credentials'
+    );
+    expect(() => sanitizeRepoUrl('https://gitlab.com/team/config.git?token=secret')).toThrow(
+      'must not contain embedded credentials'
+    );
+    expect(() => sanitizeRepoUrl('ssh://git:secret@gitlab.com/team/config.git')).toThrow(
+      'must not contain embedded passwords'
+    );
+    expect(() => sanitizeRepoUrl('https://gitlab.com/team/config.git\nsecret')).toThrow(
+      'control characters'
+    );
   });
 });
 

@@ -87,7 +87,11 @@ export async function resolveSmallModel(
     const modelValue = config.small_model ?? config.model;
     if (!modelValue) return null;
 
-    const [providerID, modelID] = modelValue.split('/', 2);
+    const separatorIndex = modelValue.indexOf('/');
+    if (separatorIndex <= 0 || separatorIndex === modelValue.length - 1) return null;
+
+    const providerID = modelValue.slice(0, separatorIndex);
+    const modelID = modelValue.slice(separatorIndex + 1);
     if (!providerID || !modelID) return null;
     return { providerID, modelID };
   } catch {
