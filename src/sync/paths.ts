@@ -52,7 +52,19 @@ const DEFAULT_SYNC_CONFIG_NAME = 'opencode-synced.jsonc';
 const DEFAULT_OVERRIDES_NAME = 'opencode-synced.overrides.jsonc';
 const DEFAULT_STATE_NAME = 'sync-state.json';
 
-const CONFIG_DIRS = ['agent', 'command', 'mode', 'tool', 'themes', 'plugin'];
+const CONFIG_DIRS = [
+  'agent',
+  'agents',
+  'command',
+  'commands',
+  'mode',
+  'modes',
+  'tool',
+  'tools',
+  'themes',
+  'plugin',
+  'plugins',
+];
 const SESSION_DIRS = ['storage/session', 'storage/message', 'storage/part', 'storage/session_diff'];
 const SESSION_DB_FILE = 'opencode.db';
 const PROMPT_STASH_FILES = ['prompt-stash.jsonl', 'prompt-history.jsonl'];

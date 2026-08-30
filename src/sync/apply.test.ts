@@ -288,7 +288,7 @@ describe('relative extra paths', () => {
       const repoRoot = path.join(root, 'repo');
       const unrelatedCwd = path.join(root, 'unrelated-cwd');
       const configFile = path.join(configRoot, 'SOUL.md');
-      const configDirectory = path.join(configRoot, 'commands');
+      const configDirectory = path.join(configRoot, 'custom-configs');
       const secretFile = path.join(configRoot, 'credentials', 'token.json');
       const secretDirectory = path.join(configRoot, 'private-agents');
       await fs.mkdir(configDirectory, { recursive: true });
@@ -304,7 +304,7 @@ describe('relative extra paths', () => {
       const config: SyncConfig = {
         repo: { owner: 'acme', name: 'config' },
         includeSecrets: true,
-        extraConfigPaths: ['SOUL.md', 'commands'],
+        extraConfigPaths: ['SOUL.md', 'custom-configs'],
         extraSecretPaths: ['credentials/token.json', 'private-agents'],
       };
       const originalCwd = process.cwd();
@@ -407,6 +407,48 @@ describe('relative extra paths', () => {
 
       await expect(fs.readFile(allowedPath, 'utf8')).resolves.toBe('allowed-copy');
       await expect(fs.stat(blockedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+});
+
+describe('syncing plural OpenCode config directories', () => {
+  it('copies canonical plural directories between isolated homes', async () => {
+    await withTempDir(async (root) => {
+      const machineAHome = path.join(root, 'machine-a');
+      const machineBHome = path.join(root, 'machine-b');
+      const repoRoot = path.join(root, 'repo');
+      const machineALocations = resolveSyncLocations({ HOME: machineAHome }, 'linux');
+      const machineBLocations = resolveSyncLocations({ HOME: machineBHome }, 'linux');
+      const config = normalizeSyncConfig({
+        repo: { owner: 'acme', name: 'config' },
+        includeSecrets: false,
+        includeOpencodeSkills: false,
+        includeAgentsDir: false,
+        includeModelFavorites: false,
+      });
+      const sentinels: Record<string, string> = {
+        'agents/reviewer.md': 'plural-agent',
+        'commands/release.md': 'plural-command',
+        'modes/focus.md': 'plural-mode',
+        'plugins/local.ts': 'plural-plugin',
+        'tools/lint.ts': 'plural-tool',
+      };
+
+      for (const [relativePath, content] of Object.entries(sentinels)) {
+        const sourcePath = path.join(machineALocations.configRoot, relativePath);
+        await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+        await fs.writeFile(sourcePath, content, 'utf8');
+      }
+
+      const machineAPlan = buildSyncPlan(config, machineALocations, repoRoot, 'linux');
+      const machineBPlan = buildSyncPlan(config, machineBLocations, repoRoot, 'linux');
+      await syncLocalToRepo(machineAPlan, null);
+      await syncRepoToLocal(machineBPlan, null);
+
+      for (const [relativePath, content] of Object.entries(sentinels)) {
+        const destinationPath = path.join(machineBLocations.configRoot, relativePath);
+        await expect(fs.readFile(destinationPath, 'utf8')).resolves.toBe(content);
+      }
     });
   });
 });

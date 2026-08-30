@@ -170,6 +170,12 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
       extraSecretPaths: tool.schema.array(tool.schema.string()).optional(),
       extraConfigPaths: tool.schema.array(tool.schema.string()).optional(),
       localRepoPath: tool.schema.string().optional().describe('Override local repo path'),
+      acknowledgePrivateRemote: tool.schema
+        .boolean()
+        .optional()
+        .describe(
+          'Acknowledge that an explicit non-GitHub remote is private (only after user confirmation)'
+        ),
       setupTurso: tool.schema
         .boolean()
         .optional()
@@ -206,11 +212,14 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
             extraSecretPaths: args.extraSecretPaths,
             extraConfigPaths: args.extraConfigPaths,
             localRepoPath: args.localRepoPath,
+            acknowledgePrivateRemote: args.acknowledgePrivateRemote,
           });
         }
         if (args.command === 'link') {
           return await service.link({
             repo: args.repo ?? args.name,
+            branch: args.branch,
+            acknowledgePrivateRemote: args.acknowledgePrivateRemote,
           });
         }
         if (args.command === 'pull') {
@@ -232,6 +241,7 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
           return await service.enableSecrets({
             extraSecretPaths: args.extraSecretPaths,
             includeMcpSecrets: args.includeMcpSecrets,
+            acknowledgePrivateRemote: args.acknowledgePrivateRemote,
           });
         }
         if (args.command === 'sessions-backend') {
