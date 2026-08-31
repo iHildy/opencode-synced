@@ -9,6 +9,23 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { inspectOversizedUnpushedHistory } from './repo.js';
 
 const roots: string[] = [];
+const GIT_LOCAL_ENVIRONMENT_VARIABLES = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CONFIG',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_COUNT',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_IMPLICIT_WORK_TREE',
+  'GIT_GRAFT_FILE',
+  'GIT_INDEX_FILE',
+  'GIT_NO_REPLACE_OBJECTS',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_PREFIX',
+  'GIT_SHALLOW_FILE',
+  'GIT_COMMON_DIR',
+];
 const execAsync = promisify(exec);
 const shell = createTestShell();
 
@@ -99,8 +116,17 @@ async function createGitFixture(): Promise<{ root: string; local: string; remote
 function git(cwd: string, ...args: string[]): void {
   const result = spawnSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
+    env: createIsolatedGitEnvironment(),
   });
   if (result.status !== 0) throw new Error(result.stderr);
+}
+
+function createIsolatedGitEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const variable of GIT_LOCAL_ENVIRONMENT_VARIABLES) {
+    delete env[variable];
+  }
+  return env;
 }
 
 interface TestShellCommand extends Promise<{ stdout: string; stderr: string }> {
@@ -115,7 +141,9 @@ function createTestShell(): PluginInput['$'] {
         result + segment + (index < values.length ? shellQuote(values[index]) : ''),
       ''
     );
-    const execution = execAsync(command) as unknown as TestShellCommand;
+    const execution = execAsync(command, {
+      env: createIsolatedGitEnvironment(),
+    }) as unknown as TestShellCommand;
     execution.quiet = () => execution;
     execution.text = async () => (await execution).stdout;
     return execution;
