@@ -34,3 +34,23 @@ jobs:
           mise run lint
           mise run test
           mise run build
+
+  WindowsPaths:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+      - name: Setup Tooling
+        uses: jdx/mise-action@d6e32c1796099e0f1f3ac741c220a8b7eae9e5dd
+        with:
+          install: true
+          cache: true
+          experimental: true
+
+      - name: Run Windows path tests
+        run: |
+          mise run setup
+          bun test src/sync/paths.test.ts
