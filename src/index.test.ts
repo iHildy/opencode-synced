@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import type { PluginInput } from '@opencode-ai/plugin';
 import type { Config } from '@opencode-ai/sdk';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@opencode-ai/plugin', () => {
   const createSchemaChain = (): Record<string, () => unknown> => {
@@ -40,11 +40,6 @@ const ENV_KEYS = [
   'MISSING_PAT',
 ] as const;
 
-afterEach(() => {
-  vi.clearAllTimers();
-  vi.useRealTimers();
-});
-
 function createPluginInput(logs: unknown[]): PluginInput {
   return {
     $: (() => {
@@ -62,6 +57,16 @@ function createPluginInput(logs: unknown[]): PluginInput {
       tui: { showToast: async () => ({}) },
     } as unknown as PluginInput['client'],
   } as PluginInput;
+}
+
+async function createPluginHooks(logs: unknown[]): ReturnType<typeof opencodeConfigSync> {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (() => 0) as unknown as typeof setTimeout;
+  try {
+    return await opencodeConfigSync(createPluginInput(logs));
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
 }
 
 async function withIsolatedPluginHome(run: (homeDir: string) => Promise<void>): Promise<void> {
@@ -86,7 +91,6 @@ async function withIsolatedPluginHome(run: (homeDir: string) => Promise<void>): 
 describe('opencode plugin config hook', () => {
   it('resolves a local placeholder at runtime without exposing it to the synced repo or logs', async () => {
     await withIsolatedPluginHome(async (homeDir) => {
-      vi.useFakeTimers();
       const locations = resolveSyncLocations();
       const repoRoot = path.join(homeDir, 'sync-repo');
       const localConfigPath = path.join(locations.configRoot, 'opencode.json');
@@ -130,7 +134,7 @@ describe('opencode plugin config hook', () => {
       );
       process.env.PR47_GITHUB_PAT = secret;
       const logs: unknown[] = [];
-      const hooks = await opencodeConfigSync(createPluginInput(logs));
+      const hooks = await createPluginHooks(logs);
       const unrelated = { keep: true };
       const runtime = parseJsonc<Config & { unrelated: typeof unrelated }>(
         await fs.readFile(repoConfigPath, 'utf8')
@@ -156,7 +160,6 @@ describe('opencode plugin config hook', () => {
 
   it('rejects a missing placeholder with field context and without exposing other env values', async () => {
     await withIsolatedPluginHome(async () => {
-      vi.useFakeTimers();
       const locations = resolveSyncLocations();
       await fs.mkdir(locations.configRoot, { recursive: true });
       await fs.writeFile(
@@ -166,7 +169,7 @@ describe('opencode plugin config hook', () => {
       );
       delete process.env.MISSING_PAT;
       const logs: unknown[] = [];
-      const hooks = await opencodeConfigSync(createPluginInput(logs));
+      const hooks = await createPluginHooks(logs);
       const runtime: Config & { keep: boolean } = {
         keep: true,
         mcp: {
