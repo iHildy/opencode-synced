@@ -38,13 +38,30 @@ jobs:
   WindowsPaths:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.ref }}
-          # The repository has a Unix-only `.mise/tasks/lint:fix` filename.
-          # Cone checkout includes top-level files plus only the source directory.
-          sparse-checkout: src
+      - name: Download exact PR source
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'source.tar.gz'
+          $headers = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GH_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $url = "https://api.github.com/repos/${{ github.repository }}/tarball/$env:HEAD_SHA"
+          Invoke-WebRequest -Uri $url -Headers $headers -OutFile $archive
+
+          # Windows Git cannot materialize `.mise/tasks/lint:fix` because of the colon.
+          tar -xzf $archive --strip-components=1 --exclude='*/.mise/*'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not extract source archive for $env:HEAD_SHA"
+          }
+          if (-not (Test-Path 'src/sync/paths.test.ts')) {
+            throw "Source archive for $env:HEAD_SHA did not contain the path tests"
+          }
+          Write-Host "Testing source archive pinned to $env:HEAD_SHA"
 
       - name: Setup Tooling
         uses: jdx/mise-action@d6e32c1796099e0f1f3ac741c220a8b7eae9e5dd
