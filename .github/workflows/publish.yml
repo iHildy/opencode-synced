@@ -240,6 +240,7 @@ jobs:
     # an immutable npm version, so the exact packed artifact must pass prepublish-smoke first.
     needs: publish
     permissions:
+      actions: read
       contents: read
     uses: ./.github/workflows/opencode-smoke.yml
     with:

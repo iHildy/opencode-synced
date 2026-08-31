@@ -22,9 +22,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "dependencies": {
     "@opencode-ai/plugin": "1.0.85"
   },
@@ -51,8 +49,6 @@
     "prepare": "husky"
   },
   "lint-staged": {
-    "*.{js,ts,json}": [
-      "biome check --write --no-errors-on-unmatched"
-    ]
+    "*.{js,ts,json}": ["biome check --write --no-errors-on-unmatched"]
   }
 }
