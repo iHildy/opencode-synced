@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { extractMcpSecrets } from './mcp-secrets.js';
+import { extractMcpSecrets, McpSecretExtractionError } from './mcp-secrets.js';
 
 describe('extractMcpSecrets', () => {
   it('moves MCP header secrets into overrides and adds env placeholders', () => {
@@ -125,5 +125,76 @@ describe('extractMcpSecrets', () => {
         },
       },
     });
+  });
+
+  it('rejects an own __proto__ server name before creating scrubbed output', () => {
+    const input = JSON.parse(
+      '{"mcp":{"__proto__":{"headers":{"Authorization":"Bearer secret"}}}}'
+    ) as Record<string, unknown>;
+
+    expect(() => extractMcpSecrets(input)).toThrow(
+      'Unsafe MCP server field "mcp.__proto__" is not allowed during secret scrubbing.'
+    );
+    expect(({} as Record<string, unknown>).headers).toBeUndefined();
+  });
+
+  it.each([
+    [0],
+    [false],
+    [null],
+    [[]],
+    [{}],
+  ])('rejects a non-string header credential %j with field context', (invalidValue) => {
+    const input = {
+      mcp: {
+        github: {
+          headers: { Authorization: invalidValue },
+        },
+      },
+    };
+
+    expect(() => extractMcpSecrets(input)).toThrow(
+      new McpSecretExtractionError(
+        'MCP credential field "mcp.github.headers.Authorization" must be a string before it ' +
+          'can be synchronized.'
+      )
+    );
+  });
+
+  it('rejects an empty header credential with field context', () => {
+    const input = {
+      mcp: { github: { headers: { Authorization: '' } } },
+    };
+
+    expect(() => extractMcpSecrets(input)).toThrow(
+      'MCP credential field "mcp.github.headers.Authorization" must not be empty before it can be ' +
+        'synchronized.'
+    );
+  });
+
+  it('rejects a non-string OAuth client secret with field context', () => {
+    const input = {
+      mcp: {
+        github: {
+          oauth: { clientSecret: ['not', 'a', 'string'] },
+        },
+      },
+    };
+
+    expect(() => extractMcpSecrets(input)).toThrow(
+      'MCP credential field "mcp.github.oauth.clientSecret" must be a string before it can be ' +
+        'synchronized.'
+    );
+  });
+
+  it('rejects an empty OAuth client secret with field context', () => {
+    const input = {
+      mcp: { github: { oauth: { clientSecret: '' } } },
+    };
+
+    expect(() => extractMcpSecrets(input)).toThrow(
+      'MCP credential field "mcp.github.oauth.clientSecret" must not be empty before it can be ' +
+        'synchronized.'
+    );
   });
 });
