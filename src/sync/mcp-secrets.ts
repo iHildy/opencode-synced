@@ -7,6 +7,13 @@ export interface McpSecretExtraction {
 
 const ENV_PLACEHOLDER_PATTERN = /\{env:[^}]+\}/i;
 
+export class McpSecretExtractionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'McpSecretExtractionError';
+  }
+}
+
 export function extractMcpSecrets(config: Record<string, unknown>): McpSecretExtraction {
   const sanitizedConfig = cloneConfig(config);
   const secretOverrides: Record<string, unknown> = {};
@@ -17,12 +24,37 @@ export function extractMcpSecrets(config: Record<string, unknown>): McpSecretExt
   }
 
   for (const [serverName, serverConfigValue] of Object.entries(mcp)) {
+    if (serverName === '__proto__') {
+      throw new McpSecretExtractionError(
+        'Unsafe MCP server field "mcp.__proto__" is not allowed during secret scrubbing.'
+      );
+    }
     const serverConfig = getPlainObject(serverConfigValue);
     if (!serverConfig) continue;
 
     const headers = getPlainObject(serverConfig.headers);
     if (headers) {
       for (const [headerName, headerValue] of Object.entries(headers)) {
+        if (typeof headerValue !== 'string') {
+          throw new McpSecretExtractionError(
+            `MCP credential field ${formatFieldPath([
+              'mcp',
+              serverName,
+              'headers',
+              headerName,
+            ])} must be a string before it can be synchronized.`
+          );
+        }
+        if (headerValue.length === 0) {
+          throw new McpSecretExtractionError(
+            `MCP credential field ${formatFieldPath([
+              'mcp',
+              serverName,
+              'headers',
+              headerName,
+            ])} must not be empty before it can be synchronized.`
+          );
+        }
         if (!isSecretString(headerValue)) continue;
         const envVar = buildHeaderEnvVar(serverName, headerName);
         const placeholder = buildHeaderPlaceholder(String(headerValue), envVar, headerName);
@@ -34,6 +66,26 @@ export function extractMcpSecrets(config: Record<string, unknown>): McpSecretExt
     const oauth = getPlainObject(serverConfig.oauth);
     if (oauth) {
       const clientSecret = oauth.clientSecret;
+      if (hasOwn(oauth, 'clientSecret') && typeof clientSecret !== 'string') {
+        throw new McpSecretExtractionError(
+          `MCP credential field ${formatFieldPath([
+            'mcp',
+            serverName,
+            'oauth',
+            'clientSecret',
+          ])} must be a string before it can be synchronized.`
+        );
+      }
+      if (clientSecret === '') {
+        throw new McpSecretExtractionError(
+          `MCP credential field ${formatFieldPath([
+            'mcp',
+            serverName,
+            'oauth',
+            'clientSecret',
+          ])} must not be empty before it can be synchronized.`
+        );
+      }
       if (isSecretString(clientSecret)) {
         const envVar = buildEnvVar(serverName, 'OAUTH_CLIENT_SECRET');
         oauth.clientSecret = `{env:${envVar}}`;
@@ -89,17 +141,34 @@ function isAuthorizationHeader(headerName?: string): boolean {
   return normalized === 'authorization' || normalized === 'proxy-authorization';
 }
 
+function formatFieldPath(path: string[]): string {
+  let result = path[0] ?? '';
+  for (const key of path.slice(1)) {
+    result += /^[a-zA-Z_$][a-zA-Z0-9_$]*$/u.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`;
+  }
+  return `"${result}"`;
+}
+
 function setNestedValue(target: Record<string, unknown>, path: string[], value: unknown): void {
   let current = target;
   for (let i = 0; i < path.length - 1; i += 1) {
     const key = path[i];
-    const next = current[key];
+    const next = hasOwn(current, key) ? current[key] : undefined;
     if (!isPlainObject(next)) {
-      current[key] = {};
+      defineOwnValue(current, key, {});
     }
     current = current[key] as Record<string, unknown>;
   }
-  current[path[path.length - 1]] = value;
+  defineOwnValue(current, path[path.length - 1], value);
+}
+
+function defineOwnValue(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 function getPlainObject(value: unknown): Record<string, unknown> | null {
