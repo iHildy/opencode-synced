@@ -64,11 +64,9 @@ jobs:
           Write-Host "Testing source archive pinned to $env:HEAD_SHA"
 
       - name: Setup Tooling
-        uses: jdx/mise-action@d6e32c1796099e0f1f3ac741c220a8b7eae9e5dd
+        uses: oven-sh/setup-bun@v2
         with:
-          install: true
-          cache: true
-          experimental: true
+          bun-version: 1.3.2
 
       - name: Run Windows path tests
         run: |
