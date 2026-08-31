@@ -8,53 +8,69 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   process:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       releases_created: ${{ steps.release-please.outputs.releases_created }}
       prs_created: ${{ steps.release-please.outputs.prs_created }}
+      release_sha: ${{ steps.release-please.outputs.sha }}
+      release_pr: ${{ steps.release-please.outputs.pr }}
     steps:
-      - uses: google-github-actions/release-please-action@v4
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
         id: release-please
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release-type: node
           skip-github-pull-request: false
 
       - name: Checkout
-        if: ${{ steps.release-please.outputs.releases_created }}
-        uses: actions/checkout@v4
+        if: steps.release-please.outputs.releases_created == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.release-please.outputs.sha }}
+          fetch-depth: 0
 
       - name: Update latest tag
-        if: ${{ steps.release-please.outputs.releases_created }}
+        if: steps.release-please.outputs.releases_created == 'true'
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git tag -f latest
-          git push origin latest
+          git push --force origin refs/tags/latest
 
   dispatch-publish:
     needs: process
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: needs.process.outputs.releases_created == 'true' || needs.process.outputs.prs_created == 'true'
     steps:
       - name: Dispatch publish for releases
         if: needs.process.outputs.releases_created == 'true'
-        uses: peter-evans/repository-dispatch@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          event-type: publish-package
-          client-payload: '{"tag": "latest"}'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ needs.process.outputs.release_sha }}
+        run: |
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" \
+            --field event_type=publish-package \
+            --field client_payload[tag]=latest \
+            --field client_payload[ref]="$RELEASE_SHA"
 
       - name: Dispatch publish for prerelease
         if: needs.process.outputs.prs_created == 'true'
-        uses: peter-evans/repository-dispatch@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          event-type: publish-package
-          client-payload: '{"tag": "next"}'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PR_NUMBER: ${{ fromJSON(needs.process.outputs.release_pr).number }}
+        run: |
+          RELEASE_PR_SHA=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PR_NUMBER}" \
+            --jq '.head.sha')
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" \
+            --field event_type=publish-package \
+            --field client_payload[tag]=next \
+            --field client_payload[ref]="$RELEASE_PR_SHA"

@@ -130,6 +130,10 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 - `~/.local/state/opencode/model.json` (model favorites)
 - Any additional paths in `extraConfigPaths` (allowlist, files or folders). Relative paths resolve from `$XDG_CONFIG_HOME/opencode` (normally `~/.config/opencode`). You do not need to include default paths like `~/.config/opencode/skills` or `~/.agents`.
 
+`~/.agents/` is enabled by default and may contain instructions or skills you consider private.
+Review it before syncing, keep the sync repository private when needed, or set
+`"includeAgentsDir": false` to opt out.
+
 Disable default directory sync by setting:
 - `"includeOpencodeSkills": false` to skip `~/.config/opencode/skills/`
 - `"includeAgentsDir": false` to skip `~/.agents/`
@@ -180,6 +184,21 @@ Best-effort session artifact sync via Git paths:
 - `~/.local/share/opencode/storage/session_diff/`
 
 This mode can conflict with concurrent writers.
+
+Large `opencode.db` files and legacy files under `storage/message/` are represented as a small,
+versioned pointer plus 40 MiB parts once they exceed 50 MiB. Parts live in the plugin-owned
+`.opencode-synced/chunks/v1/` namespace. Each pointer records the exact part count, total size,
+file mode, and SHA-256 digest; pulls validate the complete representation before atomically replacing
+the local file or database bundle. Readers continue to accept ordinary unchunked session files.
+
+The format rejects symlinks, unknown/missing parts, invalid metadata, files larger than 4 GiB, and
+representations with more than 128 parts. The chunk namespace has a versioned ownership marker, so
+cleanup refuses to touch a colliding or corrupt directory.
+
+If an earlier failed push already committed a file over GitHub's size limit, that blob remains in
+the unpushed commit ancestry even after the working tree is chunked. `opencode-synced` detects this
+and stops instead of rewriting history automatically. The error includes exact commands that first
+create a backup branch and then rebuild only the unpushed commits from the remote branch.
 
 #### Turso backend (`sessionBackend.type = "turso"`)
 

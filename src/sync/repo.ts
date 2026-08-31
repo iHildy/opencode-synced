@@ -21,6 +21,16 @@ export interface RepoUpdateResult {
   branch: string;
 }
 
+export interface OversizedHistoryInspection {
+  oversizedPaths: string[];
+  unpushedCommits: number;
+  remoteExists: boolean;
+}
+
+const DEFAULT_MAX_GIT_BLOB_BYTES = 95 * 1024 * 1024;
+const MAX_RECOVERY_COMMITS = 100;
+const MAX_RECOVERY_TREE_ENTRIES = 200_000;
+
 type Shell = PluginInput['$'];
 
 export async function isRepoCloned(repoDir: string): Promise<boolean> {
@@ -255,6 +265,78 @@ export async function pushBranch($: Shell, repoDir: string, branch: string): Pro
   } catch (error) {
     throw new SyncCommandError(`Failed to push changes: ${formatError(error)}`);
   }
+}
+
+export async function inspectOversizedUnpushedHistory(
+  $: Shell,
+  repoDir: string,
+  branch: string,
+  maxBlobBytes = DEFAULT_MAX_GIT_BLOB_BYTES
+): Promise<OversizedHistoryInspection> {
+  assertValidRepoBranch(branch);
+  if (!Number.isSafeInteger(maxBlobBytes) || maxBlobBytes <= 0) {
+    throw new SyncCommandError('Invalid oversized Git blob safety limit.');
+  }
+
+  const remoteExists = await hasRemoteBranch($, repoDir, branch);
+  try {
+    await $`git -C ${repoDir} rev-parse --verify HEAD`.quiet();
+  } catch {
+    return { oversizedPaths: [], unpushedCommits: 0, remoteExists };
+  }
+  let revisions: string[];
+  try {
+    const output = remoteExists
+      ? await $`git -C ${repoDir} rev-list --max-count=${MAX_RECOVERY_COMMITS + 1} origin/${branch}..HEAD`
+          .quiet()
+          .text()
+      : await $`git -C ${repoDir} rev-list --max-count=${MAX_RECOVERY_COMMITS + 1} HEAD --not --remotes=origin`
+          .quiet()
+          .text();
+    revisions = output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch (error) {
+    throw new SyncCommandError(`Failed to inspect unpushed Git history: ${formatError(error)}`);
+  }
+
+  if (revisions.length > MAX_RECOVERY_COMMITS) {
+    throw new SyncCommandError(
+      `Refusing to inspect more than ${MAX_RECOVERY_COMMITS} unpushed commits automatically.`
+    );
+  }
+
+  const oversizedPaths = new Set<string>();
+  let inspectedEntries = 0;
+  try {
+    for (const revision of revisions) {
+      const output = await $`git -C ${repoDir} ls-tree -r -l -z --full-tree ${revision}`
+        .quiet()
+        .text();
+      for (const entry of output.split('\0')) {
+        if (!entry) continue;
+        inspectedEntries += 1;
+        if (inspectedEntries > MAX_RECOVERY_TREE_ENTRIES) {
+          throw new SyncCommandError('Unpushed history exceeds the automatic recovery scan limit.');
+        }
+        const match = entry.match(/^\d+\s+blob\s+[a-f0-9]+\s+(\d+)\t([\s\S]+)$/u);
+        if (!match) continue;
+        const size = Number(match[1]);
+        const filePath = match[2] as string;
+        if (Number.isSafeInteger(size) && size > maxBlobBytes) oversizedPaths.add(filePath);
+      }
+    }
+  } catch (error) {
+    if (error instanceof SyncCommandError) throw error;
+    throw new SyncCommandError(`Failed to scan unpushed Git objects: ${formatError(error)}`);
+  }
+
+  return {
+    oversizedPaths: [...oversizedPaths].sort(),
+    unpushedCommits: revisions.length,
+    remoteExists,
+  };
 }
 
 async function getCurrentBranch($: Shell, repoDir: string): Promise<string> {
