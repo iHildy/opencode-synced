@@ -47,7 +47,7 @@ jobs:
         id: version
         env:
           ARTIFACT_NAME: ${{ inputs.artifact }}
-          REQUESTED_VERSION: ${{ github.event_name == 'workflow_call' && inputs.version || '' }}
+          REQUESTED_VERSION: ${{ inputs.version }}
           REQUESTED_TAG: ${{ inputs.tag }}
         run: |
           if [ -n "$ARTIFACT_NAME" ]; then

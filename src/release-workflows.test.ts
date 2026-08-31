@@ -78,4 +78,9 @@ describe('release workflows', () => {
       /postpublish-smoke:[\s\S]*?permissions:\n {6}actions: read\n {6}contents: read/
     );
   });
+
+  it('preserves the requested version across reusable workflow event types', () => {
+    expect(smokeWorkflow).toMatch(/REQUESTED_VERSION: \$\{\{ inputs\.version \}\}/);
+    expect(smokeWorkflow).not.toContain("github.event_name == 'workflow_call' && inputs.version");
+  });
 });
