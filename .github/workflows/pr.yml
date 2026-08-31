@@ -43,11 +43,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
           # The repository has a Unix-only `.mise/tasks/lint:fix` filename.
-          # Exclude task shims so Git can materialize the source on Windows.
-          sparse-checkout: |
-            /*
-            !/.mise/
-          sparse-checkout-cone-mode: false
+          # Cone checkout includes top-level files plus only the source directory.
+          sparse-checkout: src
 
       - name: Setup Tooling
         uses: jdx/mise-action@d6e32c1796099e0f1f3ac741c220a8b7eae9e5dd
@@ -58,5 +55,5 @@ jobs:
 
       - name: Run Windows path tests
         run: |
-          bun install --frozen-lockfile
+          bun install --frozen-lockfile --ignore-scripts
           bun test src/sync/paths.test.ts
