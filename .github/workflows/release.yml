@@ -65,8 +65,10 @@ jobs:
         if: needs.process.outputs.prs_created == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_PR_NUMBER: ${{ fromJSON(needs.process.outputs.release_pr).number }}
+          RELEASE_PR_JSON: ${{ needs.process.outputs.release_pr }}
         run: |
+          RELEASE_PR_NUMBER=$(jq -er '.number | select(type == "number")' \
+            <<<"$RELEASE_PR_JSON")
           RELEASE_PR_SHA=$(gh api \
             "repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PR_NUMBER}" \
             --jq '.head.sha')

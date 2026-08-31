@@ -64,4 +64,18 @@ describe('release workflows', () => {
     expect(releaseWorkflow).toContain("outputs.prs_created == 'true'");
     expect(readProjectFile('.mise/tasks/setup')).toContain('bun install --frozen-lockfile');
   });
+
+  it('does not parse an absent release PR before the prerelease step condition is applied', () => {
+    expect(releaseWorkflow).not.toContain('fromJSON(needs.process.outputs.release_pr)');
+    expect(releaseWorkflow).toContain(
+      'RELEASE_PR_JSON: $' + '{{ needs.process.outputs.release_pr }}'
+    );
+    expect(releaseWorkflow).toContain('jq -er \'.number | select(type == "number")\'');
+  });
+
+  it('allows the post-publish smoke workflow to download the published artifact', () => {
+    expect(publishWorkflow).toMatch(
+      /postpublish-smoke:[\s\S]*?permissions:\n {6}actions: read\n {6}contents: read/
+    );
+  });
 });
