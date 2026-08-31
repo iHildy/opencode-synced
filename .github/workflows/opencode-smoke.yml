@@ -13,7 +13,11 @@ on:
         default: '30'
   workflow_call:
     inputs:
-      tag:
+      artifact:
+        type: string
+        required: false
+        default: ''
+      version:
         type: string
         required: true
       timeout:
@@ -29,18 +33,58 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     permissions:
+      actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Download packed artifact
+        if: inputs.artifact != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/package
 
       - name: Resolve plugin version
         id: version
+        env:
+          ARTIFACT_NAME: ${{ inputs.artifact }}
+          REQUESTED_VERSION: ${{ github.event_name == 'workflow_call' && inputs.version || '' }}
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          VERSION=$(npm view opencode-synced@${{ inputs.tag }} version)
+          if [ -n "$ARTIFACT_NAME" ]; then
+            TARBALL=$(find "${RUNNER_TEMP}/package" -maxdepth 1 -name '*.tgz' -print -quit)
+            if [ -z "$TARBALL" ]; then
+              echo "Missing package artifact."
+              exit 1
+            fi
+            VERSION=$(tar -xOf "$TARBALL" package/package.json | jq -r '.version')
+            if [ "$VERSION" != "$REQUESTED_VERSION" ]; then
+              echo "Expected package version $REQUESTED_VERSION, found $VERSION."
+              exit 1
+            fi
+            echo "spec=opencode-synced@file:$TARBALL" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PACKAGE_SPEC="opencode-synced@${REQUESTED_VERSION:-$REQUESTED_TAG}"
+          VERSION=""
+          for attempt in 1 2 3 4 5 6; do
+            VERSION=$(npm view "$PACKAGE_SPEC" version 2>/dev/null || true)
+            if [ -n "$VERSION" ]; then
+              break
+            fi
+            echo "Waiting for npm registry to expose $PACKAGE_SPEC (attempt $attempt/6)"
+            sleep 10
+          done
           if [ -z "$VERSION" ]; then
-            echo "No version found for tag: ${{ inputs.tag }}"
+            echo "No version found for: $PACKAGE_SPEC"
             exit 1
           fi
+          if [ -n "$REQUESTED_VERSION" ] && [ "$VERSION" != "$REQUESTED_VERSION" ]; then
+            echo "Expected exact version $REQUESTED_VERSION, resolved $VERSION"
+            exit 1
+          fi
+          echo "spec=opencode-synced@$VERSION" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install opencode
@@ -53,7 +97,7 @@ jobs:
       - name: Configure clean opencode home
         env:
           opencode_home: ${{ runner.temp }}/opencode-home
-          PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+          PLUGIN_SPEC: ${{ steps.version.outputs.spec }}
         run: |
           export HOME="$opencode_home"
           export XDG_CONFIG_HOME="$HOME/.config"
@@ -65,7 +109,7 @@ jobs:
           cat > "$XDG_CONFIG_HOME/opencode/opencode.json" <<EOF
           {
             "\$schema": "https://opencode.ai/config.json",
-            "plugin": ["opencode-synced@${PLUGIN_VERSION}"]
+            "plugin": ["${PLUGIN_SPEC}"]
           }
           EOF
 
@@ -155,7 +199,7 @@ jobs:
 
       - name: Upload opencode logs (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: opencode-smoke-logs-${{ matrix.os }}
           path: ${{ runner.temp }}/opencode-smoke.log
