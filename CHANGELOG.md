@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented here by Release Please.
 
+## [0.10.0](https://github.com/iHildy/opencode-synced/compare/v0.9.0...v0.10.0) (2026-08-31)
+
+
+### Features
+
+* add isolated GitHub two-instance E2E workflow ([#52](https://github.com/iHildy/opencode-synced/issues/52)) ([e5c338f](https://github.com/iHildy/opencode-synced/commit/e5c338f99630a34bc6741e2524ab7fad1d611fbb))
+* add secrets backend config support ([f6a56e2](https://github.com/iHildy/opencode-synced/commit/f6a56e28b2f34dd6f6ba08d3cebfc3fc30806048))
+* add secrets sync commands ([c29d63a](https://github.com/iHildy/opencode-synced/commit/c29d63a2895eac43c4bb401bfed2597e38fe762d))
+* integrate 1Password secrets backend ([ca6a5bb](https://github.com/iHildy/opencode-synced/commit/ca6a5bb927402d1b302a8691a6add200ea00f3e1))
+* support explicit non-GitHub Git remotes ([#73](https://github.com/iHildy/opencode-synced/issues/73)) ([0b46b29](https://github.com/iHildy/opencode-synced/commit/0b46b29733363acacdde28361f3959ec882f083e))
+* sync skills directory by default ([#56](https://github.com/iHildy/opencode-synced/issues/56)) ([a627673](https://github.com/iHildy/opencode-synced/commit/a627673f7a00f9cdcdefe168ba110803c0678b3a))
+* update release workflow to maintain latest tag ([d5a0c75](https://github.com/iHildy/opencode-synced/commit/d5a0c751b1e817539af0de484eee8866b0e3a6fd))
+
+
+### Bug Fixes
+
+* address secrets backend review ([f2eb33b](https://github.com/iHildy/opencode-synced/commit/f2eb33b9ea605a17230b5d43dae9891a59822d0b))
+* expand e2e coverage and docs for session sync compatibility ([#53](https://github.com/iHildy/opencode-synced/issues/53)) ([78a4f88](https://github.com/iHildy/opencode-synced/commit/78a4f88ad12d72f911c0fa0e7704ff0e305e9852))
+* for [#69](https://github.com/iHildy/opencode-synced/issues/69) (nice) `resolveSmallModel` truncated selectors when the model ID itself contained `/`, ([#70](https://github.com/iHildy/opencode-synced/issues/70)) ([9a9ead9](https://github.com/iHildy/opencode-synced/commit/9a9ead9a0a679f0aa6844f89b6d055898aa90183))
+* guard secrets backend validation before actions ([790f850](https://github.com/iHildy/opencode-synced/commit/790f85039b9a2c30ac66979ffdee8d426234e798))
+* harden release publication pipeline ([#75](https://github.com/iHildy/opencode-synced/issues/75)) ([7e37271](https://github.com/iHildy/opencode-synced/commit/7e37271de21a254c1f8c7d5a35e83c13564a9f6c))
+* harden secrets backend integration ([5c37236](https://github.com/iHildy/opencode-synced/commit/5c37236ec76c27125adc9e99156e87622bf9ea8b))
+* portable paths in extra-manifest for cross-platform sync ([#58](https://github.com/iHildy/opencode-synced/issues/58)) ([96836af](https://github.com/iHildy/opencode-synced/commit/96836afd19737caba1bca03716a98cd4540c620f))
+* preserve original 1password errors ([e67d675](https://github.com/iHildy/opencode-synced/commit/e67d6755a0c2024782b4eb2ec6da73f4a2223344))
+* resolve relative extra paths from config root ([#72](https://github.com/iHildy/opencode-synced/issues/72)) ([10a3a83](https://github.com/iHildy/opencode-synced/commit/10a3a83b7798ce625ccb636aeb06ab7710d11a3c))
+* safely resolve MCP environment overrides ([#47](https://github.com/iHildy/opencode-synced/issues/47)) ([2f0ebea](https://github.com/iHildy/opencode-synced/commit/2f0ebea239cfee0923e5e5d6833e1a0882e6c2a5))
+* safely sync large session files ([#76](https://github.com/iHildy/opencode-synced/issues/76)) ([5be4e06](https://github.com/iHildy/opencode-synced/commit/5be4e067d234121917c160ba79204b0e441ebf4a))
+* strip overrides removes keys missing from local config ([#49](https://github.com/iHildy/opencode-synced/issues/49)) ([#50](https://github.com/iHildy/opencode-synced/issues/50)) ([f87ca69](https://github.com/iHildy/opencode-synced/commit/f87ca69810de342f73ad87a4ab30c5fd17260540))
+* sync opencode-synced config ([034bbe8](https://github.com/iHildy/opencode-synced/commit/034bbe8feb72cf4f2306399788dca5d897d50283))
+* sync plural OpenCode config directories ([#71](https://github.com/iHildy/opencode-synced/issues/71)) ([2f4fe70](https://github.com/iHildy/opencode-synced/commit/2f4fe700dd1776a907fdc74f4565cf50c234ebcc))
+* use current OpenCode paths on Windows ([#74](https://github.com/iHildy/opencode-synced/issues/74)) ([4c013dc](https://github.com/iHildy/opencode-synced/commit/4c013dc52ba396fa6dcd2b3f14234dafaae46220))
+
 ## [0.9.0](https://github.com/iHildy/opencode-synced/compare/v0.8.0...v0.9.0) (2026-01-29)
 
 
