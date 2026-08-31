@@ -44,6 +44,7 @@ export interface SyncPlan {
   repoRoot: string;
   homeDir: string;
   platform: NodeJS.Platform;
+  configRoot: string;
 }
 
 const DEFAULT_CONFIG_NAME = 'opencode.json';
@@ -380,6 +381,7 @@ export function buildSyncPlan(
     repoRoot,
     homeDir: locations.xdg.homeDir,
     platform,
+    configRoot: locations.configRoot,
   };
 }
 
@@ -399,4 +401,93 @@ function buildExtraPathPlan(
     manifestPath,
     entries,
   };
+}
+
+/**
+ * Convert an absolute sourcePath to a portable form for the manifest.
+ * If the path is configRoot, store it as ".". Paths inside it are relative.
+ * If outside configRoot, store it with ~/ prefix (e.g. "~/.ssh/id_rsa").
+ * Manifest separators are always forward slashes.
+ */
+export function toPortablePath(
+  absolutePath: string,
+  configRoot: string,
+  homeDir: string,
+  pathApi: typeof path.posix = process.platform === 'win32' ? path.win32 : path.posix
+): string {
+  const relativeToConfig = relativeIfContained(absolutePath, configRoot, pathApi);
+  if (relativeToConfig !== null) {
+    return relativeToConfig === '' ? '.' : toPortableSeparators(relativeToConfig);
+  }
+
+  const relativeToHome = homeDir ? relativeIfContained(absolutePath, homeDir, pathApi) : null;
+  if (relativeToHome !== null) {
+    return relativeToHome === '' ? '~' : `~/${toPortableSeparators(relativeToHome)}`;
+  }
+
+  return toPortableSeparators(absolutePath);
+}
+
+/**
+ * Resolve a portable sourcePath from the manifest back to a local absolute path.
+ * "." and relative paths are resolved against configRoot.
+ * ~/ paths are expanded via the local homeDir.
+ * Absolute POSIX, drive-letter, and UNC paths remain absolute for backwards compatibility.
+ */
+export function fromPortablePath(
+  portablePath: string,
+  configRoot: string,
+  homeDir: string,
+  pathApi: typeof path.posix = process.platform === 'win32' ? path.win32 : path.posix
+): string {
+  if (!portablePath) return portablePath;
+
+  if (portablePath === '.') return pathApi.resolve(configRoot);
+  if (portablePath === '~') return pathApi.resolve(homeDir);
+  if (portablePath.startsWith('~/') || portablePath.startsWith('~\\')) {
+    return pathApi.resolve(homeDir, portablePath.slice(2));
+  }
+
+  if (isAbsoluteOnAnyPlatform(portablePath)) {
+    return portablePath;
+  }
+
+  return pathApi.resolve(configRoot, portablePath);
+}
+
+function relativeIfContained(
+  candidatePath: string,
+  rootPath: string,
+  pathApi: typeof path.posix
+): string | null {
+  const resolvedCandidate = pathApi.resolve(candidatePath);
+  const resolvedRoot = pathApi.resolve(rootPath);
+  const comparisonCandidate = normalizeForComparison(resolvedCandidate, pathApi);
+  const comparisonRoot = normalizeForComparison(resolvedRoot, pathApi);
+  const comparisonRelative = pathApi.relative(comparisonRoot, comparisonCandidate);
+
+  if (
+    comparisonRelative === '..' ||
+    comparisonRelative.startsWith(`..${pathApi.sep}`) ||
+    pathApi.isAbsolute(comparisonRelative)
+  ) {
+    return null;
+  }
+
+  return pathApi.relative(resolvedRoot, resolvedCandidate);
+}
+
+function normalizeForComparison(inputPath: string, pathApi: typeof path.posix): string {
+  const normalized = pathApi.normalize(inputPath);
+  return pathApi === path.win32 ? normalized.toLowerCase() : normalized;
+}
+
+function isAbsoluteOnAnyPlatform(inputPath: string): boolean {
+  if (path.posix.isAbsolute(inputPath)) return true;
+  if (/^[a-zA-Z]:[\\/]/.test(inputPath)) return true;
+  return /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(inputPath);
+}
+
+function toPortableSeparators(inputPath: string): string {
+  return inputPath.replace(/\\/g, '/');
 }

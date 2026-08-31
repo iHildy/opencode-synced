@@ -8,12 +8,14 @@ import { normalizeSyncConfig } from './config.js';
 import {
   buildSyncPlan,
   expandHome,
+  fromPortablePath,
   normalizePath,
   resolveExtraPath,
   resolveHomeDir,
   resolveRepoRoot,
   resolveSyncLocations,
   resolveXdgPaths,
+  toPortablePath,
 } from './paths.js';
 
 describe('resolveHomeDir', () => {
@@ -641,5 +643,249 @@ describe('buildSyncPlan', () => {
     );
 
     expect(disabledItem).toBeUndefined();
+  });
+});
+
+describe('toPortablePath', () => {
+  it('converts configRoot-absolute path to relative', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = toPortablePath(
+      '/home/test/.config/opencode/tui.json',
+      configRoot,
+      homeDir,
+      path.posix
+    );
+    expect(result).toBe('tui.json');
+  });
+
+  it('converts nested configRoot path to relative', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = toPortablePath(
+      '/home/test/.config/opencode/sub/plugin.json',
+      configRoot,
+      homeDir,
+      path.posix
+    );
+    expect(result).toBe('sub/plugin.json');
+  });
+
+  it('converts path outside configRoot but inside homeDir to ~/ prefix', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = toPortablePath('/home/test/.ssh/id_rsa', configRoot, homeDir, path.posix);
+    expect(result).toBe('~/.ssh/id_rsa');
+  });
+
+  it('keeps absolute path if outside both configRoot and homeDir', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = toPortablePath('/opt/some/config.json', configRoot, homeDir, path.posix);
+    expect(result).toBe('/opt/some/config.json');
+  });
+
+  it('handles homeDir itself as ~', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = toPortablePath('/home/test', configRoot, homeDir, path.posix);
+    expect(result).toBe('~');
+  });
+
+  it('encodes configRoot itself as an unambiguous relative marker', () => {
+    const configRoot = '/home/test/.config/opencode';
+    expect(toPortablePath(configRoot, configRoot, '/home/test', path.posix)).toBe('.');
+  });
+
+  it('uses canonical separators for Windows-authored paths', () => {
+    const configRoot = 'C:\\Users\\Test\\AppData\\Roaming\\opencode';
+    const homeDir = 'C:\\Users\\Test';
+
+    expect(
+      toPortablePath(
+        'C:\\Users\\Test\\AppData\\Roaming\\opencode\\plugins\\custom.ts',
+        configRoot,
+        homeDir,
+        path.win32
+      )
+    ).toBe('plugins/custom.ts');
+    expect(toPortablePath('D:\\shared\\custom.json', configRoot, homeDir, path.win32)).toBe(
+      'D:/shared/custom.json'
+    );
+  });
+
+  it('compares Windows config and home roots without case sensitivity', () => {
+    const configRoot = 'C:\\Users\\Test\\AppData\\Roaming\\opencode';
+    const homeDir = 'C:\\Users\\Test';
+
+    expect(
+      toPortablePath(
+        'c:\\users\\test\\appdata\\roaming\\opencode\\Themes\\custom.json',
+        configRoot,
+        homeDir,
+        path.win32
+      )
+    ).toBe('Themes/custom.json');
+    expect(
+      toPortablePath('c:\\users\\test\\Documents\\opencode.json', configRoot, homeDir, path.win32)
+    ).toBe('~/Documents/opencode.json');
+  });
+});
+
+describe('fromPortablePath', () => {
+  it('resolves relative path against configRoot', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = fromPortablePath('tui.json', configRoot, homeDir, path.posix);
+    expect(result).toBe('/home/test/.config/opencode/tui.json');
+  });
+
+  it('resolves nested relative path against configRoot', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = fromPortablePath('sub/plugin.json', configRoot, homeDir, path.posix);
+    expect(result).toBe('/home/test/.config/opencode/sub/plugin.json');
+  });
+
+  it('expands ~/ to homeDir', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = fromPortablePath('~/.ssh/id_rsa', configRoot, homeDir, path.posix);
+    expect(result).toBe('/home/test/.ssh/id_rsa');
+  });
+
+  it('expands ~ to homeDir', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = fromPortablePath('~', configRoot, homeDir, path.posix);
+    expect(result).toBe('/home/test');
+  });
+
+  it('resolves the configRoot marker', () => {
+    const configRoot = '/home/test/.config/opencode';
+    expect(fromPortablePath('.', configRoot, '/home/test', path.posix)).toBe(configRoot);
+  });
+
+  it('keeps absolute path as-is (backwards compat)', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const result = fromPortablePath(
+      '/Users/khangnghiem/.config/opencode/tui.json',
+      configRoot,
+      homeDir,
+      path.posix
+    );
+    expect(result).toBe('/Users/khangnghiem/.config/opencode/tui.json');
+  });
+
+  it('round-trips configRoot path correctly', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const original = '/home/test/.config/opencode/tui.json';
+    const portable = toPortablePath(original, configRoot, homeDir, path.posix);
+    const restored = fromPortablePath(portable, configRoot, homeDir, path.posix);
+    expect(restored).toBe(original);
+  });
+
+  it('round-trips homeDir path correctly', () => {
+    const configRoot = '/home/test/.config/opencode';
+    const homeDir = '/home/test';
+    const original = '/home/test/.ssh/id_rsa';
+    const portable = toPortablePath(original, configRoot, homeDir, path.posix);
+    const restored = fromPortablePath(portable, configRoot, homeDir, path.posix);
+    expect(restored).toBe(original);
+  });
+
+  it('round-trips across different machines (macOS push, Linux pull)', () => {
+    // Push on macOS
+    const macConfigRoot = '/Users/khangnghiem/.config/opencode';
+    const macHomeDir = '/Users/khangnghiem';
+    const macPath = '/Users/khangnghiem/.config/opencode/tui.json';
+    const portable = toPortablePath(macPath, macConfigRoot, macHomeDir, path.posix);
+    expect(portable).toBe('tui.json');
+
+    // Pull on Linux
+    const linuxConfigRoot = '/home/linuxuser/.config/opencode';
+    const linuxHomeDir = '/home/linuxuser';
+    const linuxPath = fromPortablePath(portable, linuxConfigRoot, linuxHomeDir, path.posix);
+    expect(linuxPath).toBe('/home/linuxuser/.config/opencode/tui.json');
+  });
+
+  it('round-trips across different machines with ~/ path (macOS push, Windows pull)', () => {
+    // Push on macOS (path outside configRoot, inside homeDir)
+    const macConfigRoot = '/Users/khangnghiem/.config/opencode';
+    const macHomeDir = '/Users/khangnghiem';
+    const macPath = '/Users/khangnghiem/.ssh/id_rsa';
+    const portable = toPortablePath(macPath, macConfigRoot, macHomeDir, path.posix);
+    expect(portable).toBe('~/.ssh/id_rsa');
+
+    // Pull on Windows (~/ expands to local USERPROFILE)
+    const winConfigRoot = 'C:\\Users\\test\\AppData\\Roaming\\opencode';
+    const winHomeDir = 'C:\\Users\\test';
+    const winPath = fromPortablePath(portable, winConfigRoot, winHomeDir, path.win32);
+    expect(winPath).toBe('C:\\Users\\test\\.ssh\\id_rsa');
+  });
+
+  it('round-trips a Windows config path to a POSIX home', () => {
+    const portable = toPortablePath(
+      'C:\\Users\\Alice\\AppData\\Roaming\\opencode\\plugins\\custom.ts',
+      'C:\\Users\\Alice\\AppData\\Roaming\\opencode',
+      'C:\\Users\\Alice',
+      path.win32
+    );
+
+    expect(portable).toBe('plugins/custom.ts');
+    expect(fromPortablePath(portable, '/home/bob/.config/opencode', '/home/bob', path.posix)).toBe(
+      '/home/bob/.config/opencode/plugins/custom.ts'
+    );
+  });
+
+  it('round-trips a POSIX config path to a Windows home', () => {
+    const portable = toPortablePath(
+      '/home/alice/.config/opencode/plugins/custom.ts',
+      '/home/alice/.config/opencode',
+      '/home/alice',
+      path.posix
+    );
+
+    expect(portable).toBe('plugins/custom.ts');
+    expect(
+      fromPortablePath(
+        portable,
+        'C:\\Users\\Bob\\AppData\\Roaming\\opencode',
+        'C:\\Users\\Bob',
+        path.win32
+      )
+    ).toBe('C:\\Users\\Bob\\AppData\\Roaming\\opencode\\plugins\\custom.ts');
+  });
+
+  it('recognizes foreign absolute paths without resolving them under configRoot', () => {
+    expect(
+      fromPortablePath(
+        'C:/Users/Alice/external.json',
+        '/home/bob/.config/opencode',
+        '/home/bob',
+        path.posix
+      )
+    ).toBe('C:/Users/Alice/external.json');
+    expect(
+      fromPortablePath(
+        '/opt/opencode/external.json',
+        'C:\\Users\\Bob\\AppData\\Roaming\\opencode',
+        'C:\\Users\\Bob',
+        path.win32
+      )
+    ).toBe('/opt/opencode/external.json');
+  });
+
+  it('accepts legacy Windows separators in home-relative manifest paths', () => {
+    expect(
+      fromPortablePath(
+        '~\\Documents\\opencode.json',
+        'C:\\Users\\Bob\\AppData\\Roaming\\opencode',
+        'C:\\Users\\Bob',
+        path.win32
+      )
+    ).toBe('C:\\Users\\Bob\\Documents\\opencode.json');
   });
 });
