@@ -211,4 +211,72 @@ describe('explicit Git remote service flow', () => {
       ).resolves.toContain('opencode-synced configured');
     });
   }, 30_000);
+
+  it('fails closed with recovery instructions for an oversized unpushed session commit', async () => {
+    await withIsolatedEnvironment(async (root) => {
+      const testShell = createTestShell();
+      const remotePath = path.join(root, 'sync-remote.git');
+      await testShell`git init --bare ${remotePath}`.quiet();
+
+      const machineHome = path.join(root, 'machine');
+      useIsolatedHome(machineHome);
+      const locations = resolveSyncLocations();
+      await fs.mkdir(locations.configRoot, { recursive: true });
+      await fs.writeFile(path.join(locations.configRoot, 'opencode.json'), '{}\n');
+      const service = createSyncService({ client: createClient(), $: testShell });
+      await service.init({
+        repo: remotePath,
+        branch: 'main',
+        includeSecrets: true,
+        includeSessions: true,
+        acknowledgePrivateRemote: true,
+      });
+
+      const config = await loadSyncConfig(locations);
+      if (!config) throw new Error('Expected sync config.');
+      const repoRoot = config.localRepoPath ?? locations.defaultRepoDir;
+      const repoMessage = path.join(repoRoot, 'data', 'storage', 'message', 'failed.json');
+      const localMessage = path.join(
+        locations.xdg.dataDir,
+        'opencode',
+        'storage',
+        'message',
+        'failed.json'
+      );
+      await fs.mkdir(path.dirname(repoMessage), { recursive: true });
+      await fs.mkdir(path.dirname(localMessage), { recursive: true });
+      await fs.writeFile(repoMessage, '');
+      await fs.truncate(repoMessage, 96 * 1024 * 1024);
+      await fs.copyFile(repoMessage, localMessage);
+      await testShell`git -C ${repoRoot} add -A`.quiet();
+      await testShell`git -C ${repoRoot} commit -m ${'sync oversized session'}`.quiet();
+
+      let message = '';
+      try {
+        await service.push();
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toMatch(/Push stopped:.*data\/storage\/message\/failed\.json/su);
+      expect(message).toMatch(/git branch opencode-synced-oversized-backup-/u);
+      expect(message).toMatch(/git reset --soft origin\/main/u);
+
+      await testShell`git -C ${repoRoot} add -A`.quiet();
+      await testShell`git -C ${repoRoot} commit -m ${'sync chunk representation'}`.quiet();
+      await writeSyncConfig(locations, {
+        ...config,
+        sessionBackend: { type: 'turso' },
+      });
+      let cleanupMessage = '';
+      try {
+        await service.sessionsCleanupGit();
+      } catch (error) {
+        cleanupMessage = error instanceof Error ? error.message : String(error);
+      }
+      expect(cleanupMessage).toMatch(/Push stopped:.*data\/storage\/message\/failed\.json/su);
+      expect(cleanupMessage).toContain(
+        'The working tree has removed the deprecated Git session paths.'
+      );
+    });
+  }, 30_000);
 });

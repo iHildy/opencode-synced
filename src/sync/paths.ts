@@ -28,6 +28,7 @@ export interface SyncItem {
   isSecret: boolean;
   isConfigFile: boolean;
   preserveWhenMissing?: boolean;
+  chunkLargeFiles?: boolean;
 }
 
 export interface ExtraPathPlan {
@@ -300,6 +301,7 @@ export function buildSyncPlan(
         isSecret: true,
         isConfigFile: false,
         preserveWhenMissing: true,
+        chunkLargeFiles: true,
       });
 
       for (const dirName of SESSION_DIRS) {
@@ -310,6 +312,7 @@ export function buildSyncPlan(
           isSecret: true,
           isConfigFile: false,
           preserveWhenMissing: true,
+          chunkLargeFiles: dirName === 'storage/message',
         });
       }
     }
