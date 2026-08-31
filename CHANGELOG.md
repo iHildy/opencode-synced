@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented here by Release Please.
 
+## [0.10.1](https://github.com/iHildy/opencode-synced/compare/v0.10.0...v0.10.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* preserve release version in smoke workflow ([#79](https://github.com/iHildy/opencode-synced/issues/79)) ([22ef5c1](https://github.com/iHildy/opencode-synced/commit/22ef5c17fcbd9a445229ca78b80a80bdb88bdc1d))
+* unblock release publication workflows ([#77](https://github.com/iHildy/opencode-synced/issues/77)) ([7b93df6](https://github.com/iHildy/opencode-synced/commit/7b93df6d9a0d4f715956e01bad453d3a7f44fe37))
+
 ## [0.10.0](https://github.com/iHildy/opencode-synced/compare/v0.9.0...v0.10.0) (2026-08-31)
 
 
