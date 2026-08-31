@@ -1,3 +1,5 @@
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -5,11 +7,29 @@ import type { SyncConfig } from './config.js';
 import { normalizeSyncConfig } from './config.js';
 import {
   buildSyncPlan,
+  expandHome,
   fromPortablePath,
+  normalizePath,
+  resolveExtraPath,
+  resolveHomeDir,
+  resolveRepoRoot,
   resolveSyncLocations,
   resolveXdgPaths,
   toPortablePath,
 } from './paths.js';
+
+describe('resolveHomeDir', () => {
+  it('uses USERPROFILE as the Windows home', () => {
+    const env = {
+      USERPROFILE: 'C:\\Users\\Test',
+      HOME: 'D:\\legacy-home',
+      HOMEDRIVE: 'E:',
+      HOMEPATH: '\\fallback-home',
+    } as NodeJS.ProcessEnv;
+
+    expect(resolveHomeDir(env, 'win32')).toBe('C:\\Users\\Test');
+  });
+});
 
 describe('resolveXdgPaths', () => {
   it('resolves linux defaults', () => {
@@ -28,8 +48,28 @@ describe('resolveXdgPaths', () => {
     } as NodeJS.ProcessEnv;
     const paths = resolveXdgPaths(env, 'win32');
 
-    expect(paths.configDir).toBe('C:\\Users\\Test\\AppData\\Roaming');
-    expect(paths.dataDir).toBe('C:\\Users\\Test\\AppData\\Local');
+    expect(paths).toEqual({
+      homeDir: 'C:\\Users\\Test',
+      configDir: 'C:\\Users\\Test\\.config',
+      dataDir: 'C:\\Users\\Test\\.local\\share',
+      stateDir: 'C:\\Users\\Test\\.local\\state',
+    });
+  });
+
+  it('preserves explicit XDG overrides on Windows', () => {
+    const env = {
+      USERPROFILE: 'C:\\Users\\Test',
+      XDG_CONFIG_HOME: 'D:\\xdg\\config',
+      XDG_DATA_HOME: 'E:\\xdg\\data',
+      XDG_STATE_HOME: 'F:\\xdg\\state',
+    } as NodeJS.ProcessEnv;
+
+    expect(resolveXdgPaths(env, 'win32')).toEqual({
+      homeDir: 'C:\\Users\\Test',
+      configDir: 'D:\\xdg\\config',
+      dataDir: 'E:\\xdg\\data',
+      stateDir: 'F:\\xdg\\state',
+    });
   });
 });
 
@@ -44,6 +84,89 @@ describe('resolveSyncLocations', () => {
     expect(locations.configRoot).toBe('/custom/opencode');
     expect(locations.syncConfigPath).toBe('/custom/opencode/opencode-synced.jsonc');
     expect(locations.overridesPath).toBe('/custom/opencode/opencode-synced.overrides.jsonc');
+  });
+
+  it('uses exact Windows semantics for every modeled OpenCode location', () => {
+    const env = {
+      USERPROFILE: 'C:\\Users\\Test',
+      APPDATA: 'C:\\Users\\Test\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\Test\\AppData\\Local',
+    } as NodeJS.ProcessEnv;
+
+    const locations = resolveSyncLocations(env, 'win32');
+
+    expect(locations).toEqual({
+      xdg: {
+        homeDir: 'C:\\Users\\Test',
+        configDir: 'C:\\Users\\Test\\.config',
+        dataDir: 'C:\\Users\\Test\\.local\\share',
+        stateDir: 'C:\\Users\\Test\\.local\\state',
+      },
+      configRoot: 'C:\\Users\\Test\\.config\\opencode',
+      syncConfigPath: 'C:\\Users\\Test\\.config\\opencode\\opencode-synced.jsonc',
+      overridesPath: 'C:\\Users\\Test\\.config\\opencode\\opencode-synced.overrides.jsonc',
+      statePath: 'C:\\Users\\Test\\.local\\share\\opencode\\sync-state.json',
+      defaultRepoDir: 'C:\\Users\\Test\\.local\\share\\opencode\\opencode-synced\\repo',
+    });
+  });
+});
+
+describe('Windows path semantics', () => {
+  const env = { USERPROFILE: 'C:\\Users\\Test' } as NodeJS.ProcessEnv;
+  const locations = resolveSyncLocations(env, 'win32');
+
+  it('expands and normalizes Windows paths without host-platform leakage', () => {
+    expect(expandHome('~/shared/config.json', locations.xdg.homeDir, 'win32')).toBe(
+      'C:\\Users\\Test\\shared\\config.json'
+    );
+    expect(normalizePath('C:\\Users\\Test\\.CONFIG\\OpenCode', '', 'win32')).toBe(
+      'c:\\users\\test\\.config\\opencode'
+    );
+    expect(
+      resolveRepoRoot(
+        { repo: { owner: 'acme', name: 'config' }, localRepoPath: '~/sync-repo' },
+        locations,
+        'win32'
+      )
+    ).toBe('C:\\Users\\Test\\sync-repo');
+  });
+
+  it('builds config, data, state, and repository paths with Windows separators', () => {
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: true,
+      includeSessions: true,
+      includePromptStash: true,
+      extraSecretPaths: ['C:\\Users\\Test\\private\\token.json'],
+    };
+
+    const plan = buildSyncPlan(normalizeSyncConfig(config), locations, 'C:\\sync-repo', 'win32');
+
+    expect(plan.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          localPath: 'C:\\Users\\Test\\.config\\opencode\\opencode.json',
+          repoPath: 'C:\\sync-repo\\config\\opencode.json',
+        }),
+        expect.objectContaining({
+          localPath: 'C:\\Users\\Test\\.local\\share\\opencode\\auth.json',
+          repoPath: 'C:\\sync-repo\\data\\auth.json',
+        }),
+        expect.objectContaining({
+          localPath: 'C:\\Users\\Test\\.local\\share\\opencode\\opencode.db',
+          repoPath: 'C:\\sync-repo\\data\\opencode.db',
+        }),
+        expect.objectContaining({
+          localPath: 'C:\\Users\\Test\\.local\\state\\opencode\\model.json',
+          repoPath: 'C:\\sync-repo\\state\\model.json',
+        }),
+      ])
+    );
+    expect(plan.extraSecrets.allowlist).toEqual(['c:\\users\\test\\private\\token.json']);
+    expect(plan.extraSecrets.manifestPath).toBe('C:\\sync-repo\\secrets\\extra-manifest.json');
+    expect(
+      plan.extraSecrets.entries[0]?.repoPath.startsWith('C:\\sync-repo\\secrets\\extra\\')
+    ).toBe(true);
   });
 });
 
@@ -118,6 +241,85 @@ describe('buildSyncPlan', () => {
     expect(plan.extraConfigs.allowlist).toEqual([customConfigPath]);
   });
 
+  it('resolves relative extra config and secret paths from the opencode config root', async () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const unrelatedCwd = await fs.mkdtemp(path.join(tmpdir(), 'opencode-sync-cwd-'));
+    const originalCwd = process.cwd();
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: true,
+      extraConfigPaths: ['SOUL.md', 'commands/custom'],
+      extraSecretPaths: ['credentials/token.json', 'private-agents'],
+    };
+
+    try {
+      process.chdir(unrelatedCwd);
+      const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
+
+      expect(plan.extraConfigs.allowlist).toEqual([
+        '/home/test/.config/opencode/SOUL.md',
+        '/home/test/.config/opencode/commands/custom',
+      ]);
+      expect(plan.extraSecrets.allowlist).toEqual([
+        '/home/test/.config/opencode/credentials/token.json',
+        '/home/test/.config/opencode/private-agents',
+      ]);
+    } finally {
+      process.chdir(originalCwd);
+      await fs.rm(unrelatedCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps home-relative and absolute extra path behavior', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: true,
+      extraConfigPaths: ['~/shared/config.json', '/opt/opencode/config.json'],
+      extraSecretPaths: ['~/.ssh/id_rsa', '/run/secrets/opencode'],
+    };
+
+    const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
+
+    expect(plan.extraConfigs.allowlist).toEqual([
+      '/home/test/shared/config.json',
+      '/opt/opencode/config.json',
+    ]);
+    expect(plan.extraSecrets.allowlist).toEqual([
+      '/home/test/.ssh/id_rsa',
+      '/run/secrets/opencode',
+    ]);
+  });
+
+  it('uses the XDG opencode root for relative paths when a custom config dir is set', () => {
+    const env = {
+      HOME: '/home/test',
+      XDG_CONFIG_HOME: '/srv/xdg-config',
+      opencode_config_dir: '/custom/opencode',
+    } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+
+    expect(resolveExtraPath('custom.json', locations, 'linux')).toBe(
+      '/srv/xdg-config/opencode/custom.json'
+    );
+  });
+
+  it('deduplicates relative paths that are already default sync items', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      extraConfigPaths: ['agent', 'opencode.json', 'skills', '~/.agents', 'custom.json'],
+    };
+
+    const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
+
+    expect(plan.extraConfigs.allowlist).toEqual(['/home/test/.config/opencode/custom.json']);
+  });
+
   it('includes canonical plural and legacy singular config directories exactly once', () => {
     const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');
@@ -150,6 +352,25 @@ describe('buildSyncPlan', () => {
     expect(new Set(plan.items.map((item) => item.repoPath)).size).toBe(plan.items.length);
   });
 
+  it('uses Windows path semantics for relative, home-relative, and absolute entries', () => {
+    const env = {
+      USERPROFILE: 'C:\\Users\\Test',
+      APPDATA: 'C:\\Users\\Test\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\Test\\AppData\\Local',
+    } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'win32');
+
+    expect(resolveExtraPath('commands\\custom.md', locations, 'win32')).toBe(
+      'c:\\users\\test\\.config\\opencode\\commands\\custom.md'
+    );
+    expect(resolveExtraPath('~/shared/config.json', locations, 'win32')).toBe(
+      'c:\\users\\test\\shared\\config.json'
+    );
+    expect(resolveExtraPath('D:\\opencode\\config.json', locations, 'win32')).toBe(
+      'd:\\opencode\\config.json'
+    );
+  });
+
   it('filters plural defaults from extra config paths case-insensitively on Windows', () => {
     const env = {
       USERPROFILE: 'C:\\Users\\Test',
@@ -167,6 +388,24 @@ describe('buildSyncPlan', () => {
     const plan = buildSyncPlan(normalizeSyncConfig(config), locations, 'C:\\repo', 'win32');
 
     expect(plan.extraConfigs.allowlist).toEqual([]);
+  });
+
+  it('keeps traversing relative paths exact and their repository paths contained', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      extraConfigPaths: ['../shared/config.json'],
+    };
+
+    const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
+    const entry = plan.extraConfigs.entries[0];
+
+    expect(plan.extraConfigs.allowlist).toEqual(['/home/test/.config/shared/config.json']);
+    expect(entry?.sourcePath).toBe('/home/test/.config/shared/config.json');
+    expect(entry?.repoPath.startsWith('/repo/config/extra/')).toBe(true);
+    expect(path.relative('/repo/config/extra', entry?.repoPath ?? '').startsWith('..')).toBe(false);
   });
 
   it('includes skills directory in default sync items', () => {

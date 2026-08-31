@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -9,6 +9,7 @@ import {
   chmodIfExists,
   deepMerge,
   isTursoSessionBackend,
+  loadOverrides,
   normalizeSecretsBackend,
   normalizeSessionBackend,
   normalizeSyncConfig,
@@ -16,6 +17,7 @@ import {
   sanitizeRepoUrl,
   stripOverrides,
 } from './config.js';
+import { resolveSyncLocations } from './paths.js';
 
 describe('deepMerge', () => {
   it('merges nested objects and replaces arrays', () => {
@@ -30,6 +32,17 @@ describe('deepMerge', () => {
       nested: { x: 1, y: 3 },
       list: [2],
     });
+  });
+
+  it('defines __proto__ as data without mutating the result prototype', () => {
+    const override = JSON.parse('{"__proto__":{"polluted":"no"}}') as Record<string, unknown>;
+
+    const merged = deepMerge({}, override) as Record<string, unknown>;
+
+    expect(Object.getPrototypeOf(merged)).toBe(Object.prototype);
+    expect(Object.hasOwn(merged, '__proto__')).toBe(true);
+    expect(merged.__proto__).toEqual({ polluted: 'no' });
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 });
 
@@ -344,6 +357,60 @@ describe('chmodIfExists', () => {
     try {
       const missingPath = path.join(tempDir, 'missing.txt');
       await expect(chmodIfExists(missingPath, 0o600)).resolves.toBeUndefined();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('loadOverrides', () => {
+  it('loads JSONC and repairs a legacy overrides file to mode 0600', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'opencode-sync-overrides-'));
+    try {
+      const locations = resolveSyncLocations({ HOME: tempDir }, 'linux');
+      await mkdir(locations.configRoot, { recursive: true });
+      await writeFile(
+        locations.overridesPath,
+        `{
+          // A URL containing // is data, not a comment.
+          "mcp": {
+            "remote": {
+              "url": "https://example.test/mcp",
+              "headers": ["{env:MCP_TOKEN}", 2, false,],
+            },
+          },
+        }\n`,
+        'utf8'
+      );
+      await chmod(locations.overridesPath, 0o644);
+
+      const overrides = await loadOverrides(locations);
+
+      expect(overrides).toEqual({
+        mcp: {
+          remote: {
+            url: 'https://example.test/mcp',
+            headers: ['{env:MCP_TOKEN}', 2, false],
+          },
+        },
+      });
+      expect((await stat(locations.overridesPath)).mode & 0o777).toBe(0o600);
+      expect(await readFile(locations.overridesPath, 'utf8')).toContain('{env:MCP_TOKEN}');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a non-object overrides document', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'opencode-sync-overrides-'));
+    try {
+      const locations = resolveSyncLocations({ HOME: tempDir }, 'linux');
+      await mkdir(locations.configRoot, { recursive: true });
+      await writeFile(locations.overridesPath, '["not-an-object"]\n', 'utf8');
+
+      await expect(loadOverrides(locations)).rejects.toThrow(
+        `Local overrides file must contain a JSON object: ${locations.overridesPath}`
+      );
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
