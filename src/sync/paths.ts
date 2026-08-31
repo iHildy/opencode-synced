@@ -382,51 +382,89 @@ function buildExtraPathPlan(
 
 /**
  * Convert an absolute sourcePath to a portable form for the manifest.
- * If the path is inside configRoot, store it as a relative path (e.g. "tui.json").
+ * If the path is configRoot, store it as ".". Paths inside it are relative.
  * If outside configRoot, store it with ~/ prefix (e.g. "~/.ssh/id_rsa").
- * This makes the manifest portable across different machines and platforms.
+ * Manifest separators are always forward slashes.
  */
-export function toPortablePath(absolutePath: string, configRoot: string, homeDir: string): string {
-  // Check if path is inside configRoot
-  const rel = path.relative(configRoot, absolutePath);
-  if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
-    return rel;
+export function toPortablePath(
+  absolutePath: string,
+  configRoot: string,
+  homeDir: string,
+  pathApi: typeof path.posix = process.platform === 'win32' ? path.win32 : path.posix
+): string {
+  const relativeToConfig = relativeIfContained(absolutePath, configRoot, pathApi);
+  if (relativeToConfig !== null) {
+    return relativeToConfig === '' ? '.' : toPortableSeparators(relativeToConfig);
   }
 
-  // Check if path is inside homeDir — store with ~/ prefix
-  if (homeDir && absolutePath.startsWith(homeDir + path.sep)) {
-    return '~/' + absolutePath.slice(homeDir.length + 1);
-  }
-  if (homeDir && absolutePath === homeDir) {
-    return '~';
+  const relativeToHome = homeDir ? relativeIfContained(absolutePath, homeDir, pathApi) : null;
+  if (relativeToHome !== null) {
+    return relativeToHome === '' ? '~' : `~/${toPortableSeparators(relativeToHome)}`;
   }
 
-  // Outside both — keep absolute (last resort)
-  return absolutePath;
+  return toPortableSeparators(absolutePath);
 }
 
 /**
  * Resolve a portable sourcePath from the manifest back to a local absolute path.
- * Relative paths are resolved against configRoot.
+ * "." and relative paths are resolved against configRoot.
  * ~/ paths are expanded via the local homeDir.
- * Absolute paths are kept as-is (backwards compat).
+ * Absolute POSIX, drive-letter, and UNC paths remain absolute for backwards compatibility.
  */
 export function fromPortablePath(
   portablePath: string,
   configRoot: string,
-  homeDir: string
+  homeDir: string,
+  pathApi: typeof path.posix = process.platform === 'win32' ? path.win32 : path.posix
 ): string {
   if (!portablePath) return portablePath;
 
-  // ~/ expansion
-  if (portablePath === '~') return homeDir;
-  if (portablePath.startsWith('~/')) return path.join(homeDir, portablePath.slice(2));
-
-  // Relative path — resolve against configRoot
-  if (!path.isAbsolute(portablePath)) {
-    return path.resolve(configRoot, portablePath);
+  if (portablePath === '.') return pathApi.resolve(configRoot);
+  if (portablePath === '~') return pathApi.resolve(homeDir);
+  if (portablePath.startsWith('~/') || portablePath.startsWith('~\\')) {
+    return pathApi.resolve(homeDir, portablePath.slice(2));
   }
 
-  // Absolute — already resolved
-  return portablePath;
+  if (isAbsoluteOnAnyPlatform(portablePath)) {
+    return portablePath;
+  }
+
+  return pathApi.resolve(configRoot, portablePath);
+}
+
+function relativeIfContained(
+  candidatePath: string,
+  rootPath: string,
+  pathApi: typeof path.posix
+): string | null {
+  const resolvedCandidate = pathApi.resolve(candidatePath);
+  const resolvedRoot = pathApi.resolve(rootPath);
+  const comparisonCandidate = normalizeForComparison(resolvedCandidate, pathApi);
+  const comparisonRoot = normalizeForComparison(resolvedRoot, pathApi);
+  const comparisonRelative = pathApi.relative(comparisonRoot, comparisonCandidate);
+
+  if (
+    comparisonRelative === '..' ||
+    comparisonRelative.startsWith(`..${pathApi.sep}`) ||
+    pathApi.isAbsolute(comparisonRelative)
+  ) {
+    return null;
+  }
+
+  return pathApi.relative(resolvedRoot, resolvedCandidate);
+}
+
+function normalizeForComparison(inputPath: string, pathApi: typeof path.posix): string {
+  const normalized = pathApi.normalize(inputPath);
+  return pathApi === path.win32 ? normalized.toLowerCase() : normalized;
+}
+
+function isAbsoluteOnAnyPlatform(inputPath: string): boolean {
+  if (path.posix.isAbsolute(inputPath)) return true;
+  if (/^[a-zA-Z]:[\\/]/.test(inputPath)) return true;
+  return /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(inputPath);
+}
+
+function toPortableSeparators(inputPath: string): string {
+  return inputPath.replace(/\\/g, '/');
 }

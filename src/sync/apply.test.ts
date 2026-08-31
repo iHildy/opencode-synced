@@ -321,3 +321,133 @@ describe('syncing plural OpenCode config directories', () => {
     });
   });
 });
+
+describe('portable extra path manifests', () => {
+  it('moves an extra config file between different homes with canonical manifest paths', async () => {
+    await withTempDir(async (root) => {
+      const machineAHome = path.join(root, 'machine-a');
+      const machineBHome = path.join(root, 'machine-b');
+      const repoRoot = path.join(root, 'repo');
+      const machineALocations = resolveSyncLocations({ HOME: machineAHome }, 'linux');
+      const machineBLocations = resolveSyncLocations({ HOME: machineBHome }, 'linux');
+      const relativeExtraPath = 'custom/nested.json';
+      const machineAExtraPath = path.join(machineALocations.configRoot, relativeExtraPath);
+      const machineBExtraPath = path.join(machineBLocations.configRoot, relativeExtraPath);
+      await fs.mkdir(path.dirname(machineAExtraPath), { recursive: true });
+      await fs.writeFile(machineAExtraPath, 'portable-extra', 'utf8');
+
+      const commonConfig = {
+        repo: { owner: 'acme', name: 'config' },
+        includeSecrets: false,
+        includeOpencodeSkills: false,
+        includeAgentsDir: false,
+        includeModelFavorites: false,
+      };
+      const machineAPlan = buildSyncPlan(
+        normalizeSyncConfig({ ...commonConfig, extraConfigPaths: [machineAExtraPath] }),
+        machineALocations,
+        repoRoot,
+        'linux'
+      );
+      const machineBPlan = buildSyncPlan(
+        normalizeSyncConfig({ ...commonConfig, extraConfigPaths: [machineBExtraPath] }),
+        machineBLocations,
+        repoRoot,
+        'linux'
+      );
+
+      await syncLocalToRepo(machineAPlan, null);
+      const manifest = JSON.parse(
+        await fs.readFile(machineAPlan.extraConfigs.manifestPath, 'utf8')
+      ) as { entries: Array<{ sourcePath: string; repoPath: string }> };
+
+      expect(manifest.entries).toHaveLength(1);
+      expect(manifest.entries[0]?.sourcePath).toBe('custom/nested.json');
+      expect(manifest.entries[0]?.repoPath).toMatch(/^config\/extra\//);
+      expect(manifest.entries[0]?.repoPath).not.toContain('\\');
+
+      await syncRepoToLocal(machineBPlan, null);
+      await expect(fs.readFile(machineBExtraPath, 'utf8')).resolves.toBe('portable-extra');
+    });
+  });
+
+  it('reads legacy Windows separators in a manifest on POSIX', async () => {
+    await withTempDir(async (root) => {
+      const homeDir = path.join(root, 'home');
+      const repoRoot = path.join(root, 'repo');
+      const locations = resolveSyncLocations({ HOME: homeDir }, 'linux');
+      const localPath = path.join(locations.configRoot, 'custom.json');
+      const repoPath = path.join(repoRoot, 'config', 'extra', 'payload');
+      await fs.mkdir(path.dirname(repoPath), { recursive: true });
+      await fs.writeFile(repoPath, 'legacy-windows-manifest', 'utf8');
+
+      const plan = buildSyncPlan(
+        normalizeSyncConfig({
+          repo: { owner: 'acme', name: 'config' },
+          includeSecrets: false,
+          extraConfigPaths: [localPath],
+        }),
+        locations,
+        repoRoot,
+        'linux'
+      );
+      await fs.mkdir(path.dirname(plan.extraConfigs.manifestPath), { recursive: true });
+      await fs.writeFile(
+        plan.extraConfigs.manifestPath,
+        JSON.stringify({
+          entries: [
+            {
+              sourcePath: 'custom.json',
+              repoPath: 'config\\extra\\payload',
+              type: 'file',
+            },
+          ],
+        }),
+        'utf8'
+      );
+
+      await syncRepoToLocal(plan, null);
+      await expect(fs.readFile(localPath, 'utf8')).resolves.toBe('legacy-windows-manifest');
+    });
+  });
+
+  it('ignores manifest repository paths outside the sync repo', async () => {
+    await withTempDir(async (root) => {
+      const homeDir = path.join(root, 'home');
+      const repoRoot = path.join(root, 'repo');
+      const locations = resolveSyncLocations({ HOME: homeDir }, 'linux');
+      const localPath = path.join(locations.configRoot, 'custom.json');
+      const outsidePath = path.join(root, 'outside-payload');
+      await fs.mkdir(repoRoot, { recursive: true });
+      await fs.writeFile(outsidePath, 'must-not-copy', 'utf8');
+
+      const plan = buildSyncPlan(
+        normalizeSyncConfig({
+          repo: { owner: 'acme', name: 'config' },
+          includeSecrets: false,
+          extraConfigPaths: [localPath],
+        }),
+        locations,
+        repoRoot,
+        'linux'
+      );
+      await fs.mkdir(path.dirname(plan.extraConfigs.manifestPath), { recursive: true });
+      await fs.writeFile(
+        plan.extraConfigs.manifestPath,
+        JSON.stringify({
+          entries: [
+            {
+              sourcePath: 'custom.json',
+              repoPath: '../outside-payload',
+              type: 'file',
+            },
+          ],
+        }),
+        'utf8'
+      );
+
+      await syncRepoToLocal(plan, null);
+      await expect(fs.stat(localPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+});

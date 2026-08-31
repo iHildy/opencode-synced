@@ -284,15 +284,14 @@ async function applyExtraPaths(plan: SyncPlan, extra: ExtraPathPlan): Promise<vo
   const manifest = parseJsonc<ExtraPathManifest>(manifestContent);
 
   for (const entry of manifest.entries) {
-    // Resolve the portable sourcePath from the manifest against local paths
-    const localPath = fromPortablePath(entry.sourcePath, plan.configRoot, plan.homeDir);
+    const pathApi = plan.platform === 'win32' ? path.win32 : path.posix;
+    const localPath = fromPortablePath(entry.sourcePath, plan.configRoot, plan.homeDir, pathApi);
     const normalized = normalizePath(localPath, plan.homeDir, plan.platform);
     const isAllowed = allowlist.includes(normalized);
     if (!isAllowed) continue;
 
-    const repoPath = path.isAbsolute(entry.repoPath)
-      ? entry.repoPath
-      : path.join(plan.repoRoot, entry.repoPath);
+    const repoPath = resolveManifestRepoPath(plan.repoRoot, entry.repoPath);
+    if (!repoPath) continue;
     const entryType: ExtraPathType = entry.type ?? 'file';
 
     if (!(await pathExists(repoPath))) continue;
@@ -321,13 +320,15 @@ async function writeExtraPathManifest(plan: SyncPlan, extra: ExtraPathPlan): Pro
       continue;
     }
     const stat = await fs.stat(sourcePath);
-    const portableSourcePath = toPortablePath(sourcePath, plan.configRoot, plan.homeDir);
+    const pathApi = plan.platform === 'win32' ? path.win32 : path.posix;
+    const portableSourcePath = toPortablePath(sourcePath, plan.configRoot, plan.homeDir, pathApi);
+    const manifestRepoPath = toManifestRepoPath(plan.repoRoot, entry.repoPath);
     if (stat.isDirectory()) {
       await copyDirRecursive(sourcePath, entry.repoPath);
       const items = await collectExtraPathItems(sourcePath, sourcePath);
       entries.push({
         sourcePath: portableSourcePath,
-        repoPath: path.relative(plan.repoRoot, entry.repoPath),
+        repoPath: manifestRepoPath,
         type: 'dir',
         mode: stat.mode & 0o777,
         items,
@@ -338,7 +339,7 @@ async function writeExtraPathManifest(plan: SyncPlan, extra: ExtraPathPlan): Pro
       await copyFileWithMode(sourcePath, entry.repoPath);
       entries.push({
         sourcePath: portableSourcePath,
-        repoPath: path.relative(plan.repoRoot, entry.repoPath),
+        repoPath: manifestRepoPath,
         type: 'file',
         mode: stat.mode & 0o777,
       });
@@ -358,7 +359,7 @@ async function collectExtraPathItems(
 
   for (const entry of entries) {
     const entrySource = path.join(sourcePath, entry.name);
-    const relativePath = path.relative(basePath, entrySource);
+    const relativePath = toPortableSeparators(path.relative(basePath, entrySource));
 
     if (entry.isDirectory()) {
       const stat = await fs.stat(entrySource);
@@ -411,10 +412,11 @@ async function applyExtraPathModes(
 
 function resolveExtraPathItem(basePath: string, relativePath: string): string | null {
   if (!relativePath) return null;
-  if (path.isAbsolute(relativePath)) return null;
+  const normalizedRelativePath = toPortableSeparators(relativePath);
+  if (path.posix.isAbsolute(normalizedRelativePath)) return null;
 
   const resolvedBase = path.resolve(basePath);
-  const resolvedPath = path.resolve(basePath, relativePath);
+  const resolvedPath = path.resolve(basePath, normalizedRelativePath);
   const relative = path.relative(resolvedBase, resolvedPath);
   if (relative === '..' || relative.startsWith(`..${path.sep}`)) {
     return null;
@@ -424,6 +426,33 @@ function resolveExtraPathItem(basePath: string, relativePath: string): string | 
   }
 
   return resolvedPath;
+}
+
+function resolveManifestRepoPath(repoRoot: string, manifestRepoPath: string): string | null {
+  if (!manifestRepoPath) return null;
+
+  const resolvedRoot = path.resolve(repoRoot);
+  const portableRepoPath = toPortableSeparators(manifestRepoPath);
+  const resolvedPath = path.isAbsolute(manifestRepoPath)
+    ? path.resolve(manifestRepoPath)
+    : path.resolve(resolvedRoot, portableRepoPath);
+  const relative = path.relative(resolvedRoot, resolvedPath);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`)) return null;
+  if (path.isAbsolute(relative)) return null;
+
+  return resolvedPath;
+}
+
+function toManifestRepoPath(repoRoot: string, repoPath: string): string {
+  const containedPath = resolveManifestRepoPath(repoRoot, repoPath);
+  if (!containedPath) {
+    throw new Error(`Extra path repository target is outside the sync repo: ${repoPath}`);
+  }
+  return toPortableSeparators(path.relative(path.resolve(repoRoot), containedPath));
+}
+
+function toPortableSeparators(inputPath: string): string {
+  return inputPath.replace(/\\/g, '/');
 }
 
 function isDeepEqual(left: unknown, right: unknown): boolean {
