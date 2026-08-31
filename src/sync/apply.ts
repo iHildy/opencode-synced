@@ -88,7 +88,10 @@ export async function syncLocalToRepo(
       const baseOverrides = overrides ?? {};
       const mergedOverrides = mergeOverrides(baseOverrides, secretOverrides);
       if (options.overridesPath && !isDeepEqual(baseOverrides, mergedOverrides)) {
-        await writeJsonFile(options.overridesPath, mergedOverrides, { jsonc: true });
+        await writeJsonFile(options.overridesPath, mergedOverrides, {
+          jsonc: true,
+          mode: 0o600,
+        });
       }
     }
     overridesForStrip = overrides ? stripOverrideKeys(overrides, secretOverrides) : overrides;

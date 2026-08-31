@@ -1,61 +1,106 @@
 import { describe, expect, it } from 'vitest';
-import { applyOverridesToRuntimeConfig } from './config.js';
+
+import { applyOverridesToRuntimeConfig, parseJsonc } from './config.js';
 
 describe('applyOverridesToRuntimeConfig environment resolution', () => {
-  it('resolves {env:VAR} placeholders from process.env', () => {
-    process.env.TEST_VAR = 'secret-value';
-    process.env.OTHER_VAR = 'other-value';
-
+  it('resolves only local override values and preserves unrelated runtime identity', () => {
+    const unrelated = {
+      keep: true,
+      rawPlaceholder: '{env:DO_NOT_RESOLVE}',
+    };
     const config: Record<string, unknown> = {
+      unrelated,
       mcp: {
         github: {
-          headers: {
-            Authorization: 'Bearer {env:TEST_VAR}',
-          },
-          other: '{env:OTHER_VAR}',
+          enabled: true,
+          headers: { Authorization: 'old-value' },
         },
       },
-      unrelated: 'keep-me',
     };
-
     const overrides = {
       mcp: {
         github: {
-          headers: {
-            Authorization: 'Bearer {env:TEST_VAR}',
-          },
+          headers: { Authorization: 'Bearer {env:GITHUB_PAT}' },
+          values: ['{env:GITHUB_PAT}', 42, false, null],
         },
       },
     };
 
-    // We apply overrides (which might already contain placeholders)
-    applyOverridesToRuntimeConfig(config, overrides);
+    applyOverridesToRuntimeConfig(config, overrides, { GITHUB_PAT: 'secret-value' });
 
-    const mcp = config.mcp as Record<string, Record<string, Record<string, string>>>;
-    expect(mcp.github.headers.Authorization).toBe('Bearer secret-value');
-    expect(mcp.github.other).toBe('other-value');
-    expect(config.unrelated).toBe('keep-me');
-
-    delete process.env.TEST_VAR;
-    delete process.env.OTHER_VAR;
+    expect(config.unrelated).toBe(unrelated);
+    expect(config.unrelated).toEqual({
+      keep: true,
+      rawPlaceholder: '{env:DO_NOT_RESOLVE}',
+    });
+    expect(config.mcp).toEqual({
+      github: {
+        enabled: true,
+        headers: { Authorization: 'Bearer secret-value' },
+        values: ['secret-value', 42, false, null],
+      },
+    });
   });
 
-  it('handles missing environment variables by leaving placeholder intact', () => {
-    process.env.PRESENT_VAR = 'present';
-    delete process.env.ABSENT_VAR;
+  it('parses JSONC overrides before resolving placeholders', () => {
+    const overrides = parseJsonc<Record<string, unknown>>(`
+      {
+        // Local MCP credential
+        "mcp": {
+          "github": {
+            "headers": ["Bearer {env:GITHUB_PAT}", 7, true,],
+          },
+        },
+      }
+    `);
+    const config: Record<string, unknown> = {};
 
-    const config: Record<string, unknown> = {
-      val: '{env:PRESENT_VAR}',
-      missing: '{env:ABSENT_VAR}',
+    applyOverridesToRuntimeConfig(config, overrides, { GITHUB_PAT: 'jsonc-secret' });
+
+    expect(config).toEqual({
+      mcp: {
+        github: {
+          headers: ['Bearer jsonc-secret', 7, true],
+        },
+      },
+    });
+  });
+
+  it('rejects a missing environment variable with its override field path', () => {
+    const config = { untouched: true };
+    const overrides = {
+      mcp: {
+        github: {
+          headers: { Authorization: 'Bearer {env:MISSING_PAT}' },
+        },
+      },
     };
 
-    applyOverridesToRuntimeConfig(config, {});
+    expect(() => applyOverridesToRuntimeConfig(config, overrides, {})).toThrow(
+      'Missing environment variable "MISSING_PAT" required by local override ' +
+        '"overrides.mcp.github.headers.Authorization".'
+    );
+    expect(config).toEqual({ untouched: true });
+  });
 
-    expect(config.val).toBe('present');
-    // If it's missing, we keep it as is to avoid breaking things silently or passing empty strings
-    // that might be harder to debug.
-    expect(config.missing).toBe('{env:ABSENT_VAR}');
+  it('rejects an empty environment variable with its array field path', () => {
+    const config: Record<string, unknown> = {};
+    const overrides = { headers: ['{env:EMPTY_TOKEN}'] };
 
-    delete process.env.PRESENT_VAR;
+    expect(() => applyOverridesToRuntimeConfig(config, overrides, { EMPTY_TOKEN: '' })).toThrow(
+      'Environment variable "EMPTY_TOKEN" required by local override ' +
+        '"overrides.headers[0]" is empty.'
+    );
+  });
+
+  it('rejects __proto__ override keys without mutating object prototypes', () => {
+    const config: Record<string, unknown> = {};
+    const overrides = JSON.parse('{"__proto__":{"polluted":"yes"}}') as Record<string, unknown>;
+
+    expect(() => applyOverridesToRuntimeConfig(config, overrides, {})).toThrow(
+      'Unsafe local override field "overrides.__proto__" is not allowed.'
+    );
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(config)).toBe(Object.prototype);
   });
 });

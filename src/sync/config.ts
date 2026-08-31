@@ -296,8 +296,12 @@ export async function loadOverrides(
     return null;
   }
 
+  await chmodIfExists(locations.overridesPath, 0o600);
   const content = await fs.readFile(locations.overridesPath, 'utf8');
-  const parsed = parseJsonc<Record<string, unknown>>(content);
+  const parsed = parseJsonc<unknown>(content);
+  if (!isPlainObject(parsed)) {
+    throw new Error(`Local overrides file must contain a JSON object: ${locations.overridesPath}`);
+  }
   return parsed;
 }
 
@@ -323,39 +327,75 @@ export async function updateState(
   await writeState(locations, { ...existing, ...update });
 }
 
-export function applyOverridesToRuntimeConfig(
-  config: Record<string, unknown>,
-  overrides: Record<string, unknown>
-): void {
-  const merged = deepMerge(config, overrides) as Record<string, unknown>;
-  const resolved = resolveEnvPlaceholders(merged);
-  for (const key of Object.keys(config)) {
-    delete config[key];
+export class EnvPlaceholderResolutionError extends Error {
+  constructor(
+    message: string,
+    readonly fieldPath: readonly string[] = []
+  ) {
+    super(message);
+    this.name = 'EnvPlaceholderResolutionError';
   }
-  Object.assign(config, resolved);
 }
 
-export function resolveEnvPlaceholders(config: unknown): unknown {
-  if (typeof config === 'string') {
-    return config.replace(/\{env:([^}]+)\}/g, (match, envVar) => {
-      const value = process.env[envVar];
-      return value !== undefined ? value : match;
+export function applyOverridesToRuntimeConfig(
+  config: Record<string, unknown>,
+  overrides: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env
+): void {
+  const resolvedOverrides = resolveEnvPlaceholders(overrides, env);
+  const merged = deepMerge(config, resolvedOverrides) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(merged)) {
+    defineOwnValue(config, key, value);
+  }
+}
+
+export function resolveEnvPlaceholders(
+  value: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+  fieldPath: readonly string[] = ['overrides']
+): unknown {
+  if (typeof value === 'string') {
+    return value.replace(/\{env:([^}]+)\}/g, (_match, envVar: string) => {
+      const resolved = env[envVar];
+      const displayPath = formatFieldPath(fieldPath);
+      if (resolved === undefined) {
+        throw new EnvPlaceholderResolutionError(
+          `Missing environment variable "${envVar}" required by local override "${displayPath}".`,
+          fieldPath
+        );
+      }
+      if (resolved.length === 0) {
+        throw new EnvPlaceholderResolutionError(
+          `Environment variable "${envVar}" required by local override "${displayPath}" is empty.`,
+          fieldPath
+        );
+      }
+      return resolved;
     });
   }
 
-  if (Array.isArray(config)) {
-    return config.map((item) => resolveEnvPlaceholders(item));
+  if (Array.isArray(value)) {
+    return value.map((item, index) =>
+      resolveEnvPlaceholders(item, env, [...fieldPath, `${index}`])
+    );
   }
 
-  if (isPlainObject(config)) {
+  if (isPlainObject(value)) {
     const result: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(config)) {
-      result[key] = resolveEnvPlaceholders(value);
+    for (const [key, nestedValue] of Object.entries(value)) {
+      const nestedPath = [...fieldPath, key];
+      if (key === '__proto__') {
+        throw new EnvPlaceholderResolutionError(
+          `Unsafe local override field "${formatFieldPath(nestedPath)}" is not allowed.`,
+          nestedPath
+        );
+      }
+      defineOwnValue(result, key, resolveEnvPlaceholders(nestedValue, env, nestedPath));
     }
     return result;
   }
 
-  return config;
+  return value;
 }
 
 export function deepMerge<T>(base: T, override: unknown): T {
@@ -365,13 +405,33 @@ export function deepMerge<T>(base: T, override: unknown): T {
 
   const result: Record<string, unknown> = { ...(base as Record<string, unknown>) };
   for (const [key, value] of Object.entries(override as Record<string, unknown>)) {
-    if (isPlainObject(value) && isPlainObject(result[key])) {
-      result[key] = deepMerge(result[key], value);
-    } else {
-      result[key] = value;
-    }
+    const currentValue = hasOwn(result, key) ? result[key] : undefined;
+    const mergedValue =
+      isPlainObject(value) && isPlainObject(currentValue) ? deepMerge(currentValue, value) : value;
+    defineOwnValue(result, key, mergedValue);
   }
   return result as T;
+}
+
+function formatFieldPath(fieldPath: readonly string[]): string {
+  let result = fieldPath[0] ?? '';
+  for (const key of fieldPath.slice(1)) {
+    if (/^(0|[1-9][0-9]*)$/u.test(key)) {
+      result += `[${key}]`;
+      continue;
+    }
+    result += /^[a-zA-Z_$][a-zA-Z0-9_$]*$/u.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`;
+  }
+  return result;
+}
+
+function defineOwnValue(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 export function stripOverrides(
@@ -498,7 +558,11 @@ export async function writeJsonFile(
 ): Promise<void> {
   const json = JSON.stringify(data, null, 2);
   const content = options.jsonc ? `// Generated by opencode-synced\n${json}\n` : `${json}\n`;
-  await fs.writeFile(filePath, content, 'utf8');
+  if (options.mode === undefined) {
+    await fs.writeFile(filePath, content, 'utf8');
+  } else {
+    await fs.writeFile(filePath, content, { encoding: 'utf8', mode: options.mode });
+  }
   if (options.mode !== undefined) {
     await chmodIfExists(filePath, options.mode);
   }

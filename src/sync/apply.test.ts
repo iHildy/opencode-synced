@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { syncLocalToRepo, syncRepoToLocal } from './apply.js';
-import { normalizeSyncConfig } from './config.js';
+import { loadOverrides, normalizeSyncConfig, parseJsonc } from './config.js';
 import type { ExtraPathPlan, SyncItem, SyncPlan } from './paths.js';
 import { buildSyncPlan, resolveSyncLocations } from './paths.js';
 
@@ -317,6 +317,100 @@ describe('syncing plural OpenCode config directories', () => {
         const destinationPath = path.join(machineBLocations.configRoot, relativePath);
         await expect(fs.readFile(destinationPath, 'utf8')).resolves.toBe(content);
       }
+    });
+  });
+});
+
+describe('MCP secret scrub round trip', () => {
+  it('keeps the secret local, writes a placeholder to the repo, and protects overrides', async () => {
+    await withTempDir(async (root) => {
+      const homeDir = path.join(root, 'home');
+      const repoRoot = path.join(root, 'repo');
+      const locations = resolveSyncLocations({ HOME: homeDir }, 'linux');
+      const localConfigPath = path.join(locations.configRoot, 'opencode.jsonc');
+      const repoConfigPath = path.join(repoRoot, 'config', 'opencode.jsonc');
+      const secret = 'focused-runtime-secret';
+      await fs.mkdir(locations.configRoot, { recursive: true });
+      await fs.writeFile(
+        localConfigPath,
+        `{
+          // The secret must never reach Git.
+          "mcp": {
+            "github": {
+              "headers": { "Authorization": "Bearer ${secret}" },
+            },
+          },
+        }\n`,
+        'utf8'
+      );
+
+      const config = normalizeSyncConfig({
+        repo: { owner: 'acme', name: 'config' },
+        includeOpencodeSkills: false,
+        includeAgentsDir: false,
+        includeModelFavorites: false,
+      });
+      const plan = buildSyncPlan(config, locations, repoRoot, 'linux');
+      await syncLocalToRepo(plan, null, { overridesPath: locations.overridesPath });
+
+      const repoContent = await fs.readFile(repoConfigPath, 'utf8');
+      const overridesContent = await fs.readFile(locations.overridesPath, 'utf8');
+      const overrideMode = (await fs.stat(locations.overridesPath)).mode & 0o777;
+      expect(repoContent).toContain('Bearer {env:opencode_mcp_GITHUB_AUTHORIZATION}');
+      expect(repoContent).not.toContain(secret);
+      expect(overridesContent).toContain(secret);
+      expect(overrideMode).toBe(0o600);
+
+      const overrides = await loadOverrides(locations);
+      expect(overrides).not.toBeNull();
+      await fs.writeFile(localConfigPath, '{}\n', 'utf8');
+      await syncRepoToLocal(plan, overrides);
+
+      const restored = parseJsonc<Record<string, unknown>>(
+        await fs.readFile(localConfigPath, 'utf8')
+      );
+      expect(restored).toEqual({
+        mcp: {
+          github: {
+            headers: { Authorization: `Bearer ${secret}` },
+          },
+        },
+      });
+    });
+  });
+
+  it('rejects malformed credential values before mutating the synced repository', async () => {
+    await withTempDir(async (root) => {
+      const homeDir = path.join(root, 'home');
+      const repoRoot = path.join(root, 'repo');
+      const locations = resolveSyncLocations({ HOME: homeDir }, 'linux');
+      const localConfigPath = path.join(locations.configRoot, 'opencode.json');
+      const repoConfigPath = path.join(repoRoot, 'config', 'opencode.json');
+      await fs.mkdir(path.dirname(localConfigPath), { recursive: true });
+      await fs.mkdir(path.dirname(repoConfigPath), { recursive: true });
+      await fs.writeFile(
+        localConfigPath,
+        '{"mcp":{"github":{"headers":{"Authorization":false}}}}\n',
+        'utf8'
+      );
+      const originalRepoContent = '{"existing":"must-remain"}\n';
+      await fs.writeFile(repoConfigPath, originalRepoContent, 'utf8');
+      const config = normalizeSyncConfig({
+        repo: { owner: 'acme', name: 'config' },
+        includeOpencodeSkills: false,
+        includeAgentsDir: false,
+        includeModelFavorites: false,
+      });
+      const plan = buildSyncPlan(config, locations, repoRoot, 'linux');
+
+      await expect(
+        syncLocalToRepo(plan, null, { overridesPath: locations.overridesPath })
+      ).rejects.toThrow(
+        'MCP credential field "mcp.github.headers.Authorization" must be a string before it can ' +
+          'be synchronized.'
+      );
+      expect(await fs.readFile(repoConfigPath, 'utf8')).toBe(originalRepoContent);
+      await expect(fs.stat(locations.overridesPath)).rejects.toMatchObject({ code: 'ENOENT' });
     });
   });
 });
