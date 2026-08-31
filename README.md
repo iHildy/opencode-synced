@@ -130,6 +130,10 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 - `~/.local/state/opencode/model.json` (model favorites)
 - Any additional paths in `extraConfigPaths` (allowlist, files or folders). You do not need to include default paths like `~/.config/opencode/skills` or `~/.agents`.
 
+`~/.agents/` is enabled by default and may contain instructions or skills you consider private.
+Review it before syncing, keep the sync repository private when needed, or set
+`"includeAgentsDir": false` to opt out.
+
 Disable default directory sync by setting:
 - `"includeOpencodeSkills": false` to skip `~/.config/opencode/skills/`
 - `"includeAgentsDir": false` to skip `~/.agents/`

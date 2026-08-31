@@ -5,7 +5,7 @@ echo ""
 echo "🍜 Setting up project"
 echo ""
 
-bun install
+bun install --frozen-lockfile
 
 echo ""
 echo "👍 Done"

@@ -10,21 +10,124 @@ on:
         options:
           - latest
           - next
+      ref:
+        description: 'Exact full commit SHA to publish'
+        required: true
+        type: string
   repository_dispatch:
     types: [publish-package]
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
-  publish:
+  validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
-      requested_tag: ${{ steps.publish.outputs.requested_tag }}
+      ref: ${{ steps.request.outputs.ref }}
+      tag: ${{ steps.request.outputs.tag }}
+    steps:
+      - name: Validate canonical publish ref
+        id: request
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_REF: ${{ inputs.ref }}
+          PAYLOAD_REF: ${{ github.event.client_payload.ref }}
+          PAYLOAD_TAG: ${{ github.event.client_payload.tag }}
+        run: |
+          DEFAULT_BRANCH=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.default_branch')
+          DEFAULT_SHA=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${DEFAULT_BRANCH}" \
+            --jq '.sha')
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+            REF="$INPUT_REF"
+          else
+            TAG="$PAYLOAD_TAG"
+            REF="$PAYLOAD_REF"
+          fi
+
+          if [[ ! "$REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Publishing requires a full commit SHA."
+            exit 1
+          fi
+
+          case "$TAG" in
+            latest|next) ;;
+            *)
+              echo "Unsupported npm tag: $TAG"
+              exit 1
+              ;;
+          esac
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && \
+            [ "$TAG" = "next" ] && [ "$REF" != "$DEFAULT_SHA" ]; then
+            echo "Manual next publishing requires the current default-branch SHA."
+            exit 1
+          fi
+
+          if [ "$TAG" = "latest" ]; then
+            PACKAGE_VERSION=$(gh api \
+              -H "Accept: application/vnd.github.raw+json" \
+              "repos/${GITHUB_REPOSITORY}/contents/package.json?ref=${REF}" \
+              --jq '.version')
+            if [[ ! "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Latest publishing requires a stable semantic version."
+              exit 1
+            fi
+            TAG_OBJECT=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${PACKAGE_VERSION}")
+            TAG_TYPE=$(jq -r '.object.type' <<<"$TAG_OBJECT")
+            TAG_SHA=$(jq -r '.object.sha' <<<"$TAG_OBJECT")
+            while [ "$TAG_TYPE" = "tag" ]; do
+              TAG_OBJECT=$(gh api \
+                "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_SHA}")
+              TAG_TYPE=$(jq -r '.object.type' <<<"$TAG_OBJECT")
+              TAG_SHA=$(jq -r '.object.sha' <<<"$TAG_OBJECT")
+            done
+            if [ "$TAG_TYPE" != "commit" ] || [ "$REF" != "$TAG_SHA" ]; then
+              echo "Latest publishing requires the commit behind v${PACKAGE_VERSION}."
+              exit 1
+            fi
+          fi
+
+          if [ "$EVENT_NAME" = "repository_dispatch" ] && [ "$TAG" = "next" ]; then
+            MATCHING_RELEASE_PRS=$(gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=${DEFAULT_BRANCH}&per_page=100" | \
+              jq --arg ref "$REF" '[.[][] | select(
+                .head.sha == $ref and
+                .user.login == "github-actions[bot]" and
+                (.head.ref | startswith("release-please--branches--")) and
+                (.title | startswith("chore(main): release "))
+              )] | length')
+            if [ "$MATCHING_RELEASE_PRS" != "1" ]; then
+              echo "Next publishing requires the exact SHA of the open release-please PR."
+              exit 1
+            fi
+          fi
+
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  package:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact: opencode-synced-package
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.validate.outputs.ref }}
+          persist-credentials: false
 
       - uses: jdx/mise-action@d6e32c1796099e0f1f3ac741c220a8b7eae9e5dd
         with:
@@ -35,67 +138,110 @@ jobs:
       - name: Setup
         run: mise run setup
 
+      - name: Prepare package version
+        id: version
+        env:
+          REQUESTED_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          BASE_VERSION=$(node --print "require('./package.json').version")
+          if [ -z "$BASE_VERSION" ]; then
+            echo "Missing package version."
+            exit 1
+          fi
+          if [[ ! "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semantic package version: $BASE_VERSION"
+            exit 1
+          fi
+
+          VERSION="$BASE_VERSION"
+          if [ "$REQUESTED_TAG" = "next" ]; then
+            BASE_VERSION_WITHOUT_PRERELEASE="${BASE_VERSION%%[-+]*}"
+            if [[ ! "$BASE_VERSION_WITHOUT_PRERELEASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid package version for prerelease: $BASE_VERSION"
+              exit 1
+            fi
+
+            VERSION="${BASE_VERSION_WITHOUT_PRERELEASE}-next.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+            npm version "$VERSION" \
+              --no-git-tag-version \
+              --ignore-scripts \
+              --allow-same-version
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Build
         run: mise run build
 
-      - id: inputs
-        uses: simenandre/setup-inputs@v1
-
-      - name: Publish candidate to npm with OIDC
-        id: publish
+      - name: Pack exact artifact
         run: |
-          TAG="${{ steps.inputs.outputs.tag }}"
-          if [ -z "$TAG" ]; then
-            TAG="latest"
-          fi
+          mkdir -p "${RUNNER_TEMP}/package"
+          npm pack --pack-destination "${RUNNER_TEMP}/package"
 
-          echo "requested_tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Upload exact artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: opencode-synced-package
+          path: ${{ runner.temp }}/package/*.tgz
+          if-no-files-found: error
+          retention-days: 1
 
-          CANDIDATE_TAG="next"
-          echo "Publishing candidate with tag: $CANDIDATE_TAG (requested: $TAG)"
-          mise run publish --tag "$CANDIDATE_TAG"
-
-      - name: Resolve published version
-        id: version
-        run: |
-          VERSION=$(npm view opencode-synced@next version)
-          if [ -z "$VERSION" ]; then
-            echo "Failed to resolve version from npm tag: next"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-  smoke:
-    needs: publish
+  prepublish-smoke:
+    needs: package
+    permissions:
+      actions: read
+      contents: read
     uses: ./.github/workflows/opencode-smoke.yml
     with:
-      tag: next
+      artifact: ${{ needs.package.outputs.artifact }}
+      version: ${{ needs.package.outputs.version }}
       timeout: 20
-    continue-on-error: true
 
-  promote_latest:
-    needs: [publish, smoke]
-    if: needs.publish.outputs.requested_tag == 'latest'
+  publish:
+    needs: [validate, package, prepublish-smoke]
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       id-token: write
-      contents: read
+    outputs:
+      version: ${{ needs.package.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: jdx/mise-action@d6e32c1796099e0f1f3ac741c220a8b7eae9e5dd
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
-          install: true
-          cache: true
-          experimental: true
+          node-version: 24
 
-      - name: Promote latest dist-tag
+      - name: Install trusted-publishing npm version
+        run: npm install --global --ignore-scripts npm@11.6.3
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ needs.package.outputs.artifact }}
+          path: ${{ runner.temp }}/package
+
+      - name: Publish exact artifact to npm with OIDC
+        env:
+          EXPECTED_VERSION: ${{ needs.package.outputs.version }}
+          REQUESTED_TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          VERSION="${{ needs.publish.outputs.version }}"
-          if [ -z "$VERSION" ]; then
-            echo "Missing published version."
+          TARBALL=$(find "${RUNNER_TEMP}/package" -maxdepth 1 -name '*.tgz' -print -quit)
+          if [ -z "$TARBALL" ]; then
+            echo "Missing package artifact."
             exit 1
           fi
+          ACTUAL_VERSION=$(tar -xOf "$TARBALL" package/package.json | jq -r '.version')
+          if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "Expected package version $EXPECTED_VERSION, found $ACTUAL_VERSION."
+            exit 1
+          fi
+          npm publish "$TARBALL" --access public --tag "$REQUESTED_TAG" --ignore-scripts
 
-          echo "Promoting opencode-synced@$VERSION to latest"
-          npm dist-tag add "opencode-synced@$VERSION" latest
+  postpublish-smoke:
+    # Trusted publishing authorizes npm publish only. A failed post-publish smoke cannot roll back
+    # an immutable npm version, so the exact packed artifact must pass prepublish-smoke first.
+    needs: publish
+    permissions:
+      contents: read
+    uses: ./.github/workflows/opencode-smoke.yml
+    with:
+      version: ${{ needs.publish.outputs.version }}
+      timeout: 20
