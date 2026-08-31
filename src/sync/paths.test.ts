@@ -650,7 +650,12 @@ describe('toPortablePath', () => {
   it('converts configRoot-absolute path to relative', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
-    const result = toPortablePath('/home/test/.config/opencode/tui.json', configRoot, homeDir);
+    const result = toPortablePath(
+      '/home/test/.config/opencode/tui.json',
+      configRoot,
+      homeDir,
+      path.posix
+    );
     expect(result).toBe('tui.json');
   });
 
@@ -660,7 +665,8 @@ describe('toPortablePath', () => {
     const result = toPortablePath(
       '/home/test/.config/opencode/sub/plugin.json',
       configRoot,
-      homeDir
+      homeDir,
+      path.posix
     );
     expect(result).toBe('sub/plugin.json');
   });
@@ -668,21 +674,21 @@ describe('toPortablePath', () => {
   it('converts path outside configRoot but inside homeDir to ~/ prefix', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
-    const result = toPortablePath('/home/test/.ssh/id_rsa', configRoot, homeDir);
+    const result = toPortablePath('/home/test/.ssh/id_rsa', configRoot, homeDir, path.posix);
     expect(result).toBe('~/.ssh/id_rsa');
   });
 
   it('keeps absolute path if outside both configRoot and homeDir', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
-    const result = toPortablePath('/opt/some/config.json', configRoot, homeDir);
+    const result = toPortablePath('/opt/some/config.json', configRoot, homeDir, path.posix);
     expect(result).toBe('/opt/some/config.json');
   });
 
   it('handles homeDir itself as ~', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
-    const result = toPortablePath('/home/test', configRoot, homeDir);
+    const result = toPortablePath('/home/test', configRoot, homeDir, path.posix);
     expect(result).toBe('~');
   });
 
@@ -730,28 +736,28 @@ describe('fromPortablePath', () => {
   it('resolves relative path against configRoot', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
-    const result = fromPortablePath('tui.json', configRoot, homeDir);
+    const result = fromPortablePath('tui.json', configRoot, homeDir, path.posix);
     expect(result).toBe('/home/test/.config/opencode/tui.json');
   });
 
   it('resolves nested relative path against configRoot', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
-    const result = fromPortablePath(path.join('sub', 'plugin.json'), configRoot, homeDir);
-    expect(result).toBe(path.join('/home/test/.config/opencode', 'sub', 'plugin.json'));
+    const result = fromPortablePath('sub/plugin.json', configRoot, homeDir, path.posix);
+    expect(result).toBe('/home/test/.config/opencode/sub/plugin.json');
   });
 
   it('expands ~/ to homeDir', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
-    const result = fromPortablePath('~/.ssh/id_rsa', configRoot, homeDir);
+    const result = fromPortablePath('~/.ssh/id_rsa', configRoot, homeDir, path.posix);
     expect(result).toBe('/home/test/.ssh/id_rsa');
   });
 
   it('expands ~ to homeDir', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
-    const result = fromPortablePath('~', configRoot, homeDir);
+    const result = fromPortablePath('~', configRoot, homeDir, path.posix);
     expect(result).toBe('/home/test');
   });
 
@@ -766,7 +772,8 @@ describe('fromPortablePath', () => {
     const result = fromPortablePath(
       '/Users/khangnghiem/.config/opencode/tui.json',
       configRoot,
-      homeDir
+      homeDir,
+      path.posix
     );
     expect(result).toBe('/Users/khangnghiem/.config/opencode/tui.json');
   });
@@ -775,8 +782,8 @@ describe('fromPortablePath', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
     const original = '/home/test/.config/opencode/tui.json';
-    const portable = toPortablePath(original, configRoot, homeDir);
-    const restored = fromPortablePath(portable, configRoot, homeDir);
+    const portable = toPortablePath(original, configRoot, homeDir, path.posix);
+    const restored = fromPortablePath(portable, configRoot, homeDir, path.posix);
     expect(restored).toBe(original);
   });
 
@@ -784,8 +791,8 @@ describe('fromPortablePath', () => {
     const configRoot = '/home/test/.config/opencode';
     const homeDir = '/home/test';
     const original = '/home/test/.ssh/id_rsa';
-    const portable = toPortablePath(original, configRoot, homeDir);
-    const restored = fromPortablePath(portable, configRoot, homeDir);
+    const portable = toPortablePath(original, configRoot, homeDir, path.posix);
+    const restored = fromPortablePath(portable, configRoot, homeDir, path.posix);
     expect(restored).toBe(original);
   });
 
@@ -794,13 +801,13 @@ describe('fromPortablePath', () => {
     const macConfigRoot = '/Users/khangnghiem/.config/opencode';
     const macHomeDir = '/Users/khangnghiem';
     const macPath = '/Users/khangnghiem/.config/opencode/tui.json';
-    const portable = toPortablePath(macPath, macConfigRoot, macHomeDir);
+    const portable = toPortablePath(macPath, macConfigRoot, macHomeDir, path.posix);
     expect(portable).toBe('tui.json');
 
     // Pull on Linux
     const linuxConfigRoot = '/home/linuxuser/.config/opencode';
     const linuxHomeDir = '/home/linuxuser';
-    const linuxPath = fromPortablePath(portable, linuxConfigRoot, linuxHomeDir);
+    const linuxPath = fromPortablePath(portable, linuxConfigRoot, linuxHomeDir, path.posix);
     expect(linuxPath).toBe('/home/linuxuser/.config/opencode/tui.json');
   });
 
@@ -809,7 +816,7 @@ describe('fromPortablePath', () => {
     const macConfigRoot = '/Users/khangnghiem/.config/opencode';
     const macHomeDir = '/Users/khangnghiem';
     const macPath = '/Users/khangnghiem/.ssh/id_rsa';
-    const portable = toPortablePath(macPath, macConfigRoot, macHomeDir);
+    const portable = toPortablePath(macPath, macConfigRoot, macHomeDir, path.posix);
     expect(portable).toBe('~/.ssh/id_rsa');
 
     // Pull on Windows (~/ expands to local USERPROFILE)
