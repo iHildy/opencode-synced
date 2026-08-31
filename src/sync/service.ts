@@ -32,6 +32,7 @@ import {
   hasAnyRemoteBranches,
   hasLocalChanges,
   hasRemoteBranch,
+  inspectOversizedUnpushedHistory,
   isExplicitGitRemote,
   isGitHubRepoConfig,
   isRepoCloned,
@@ -806,6 +807,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
             overridesPath: locations.overridesPath,
             allowMcpSecrets: canCommitMcpSecrets(config),
           });
+          await assertNoOversizedUnpushedHistory(ctx.$, repoRoot, branch);
 
           const dirty = await hasLocalChanges(ctx.$, repoRoot);
           if (dirty) {
@@ -1041,6 +1043,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           overridesPath: locations.overridesPath,
           allowMcpSecrets: canCommitMcpSecrets(config),
         });
+        await assertNoOversizedUnpushedHistory(ctx.$, repoRoot, branch);
 
         const dirty = await hasLocalChanges(ctx.$, repoRoot);
         if (!dirty) {
@@ -1335,12 +1338,18 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           await fs.rm(target, { recursive: true, force: true });
         }
 
+        const branch = await resolveBranch(ctx, config, repoRoot);
+        await assertNoOversizedUnpushedHistory(
+          ctx.$,
+          repoRoot,
+          branch,
+          'The working tree has removed the deprecated Git session paths.'
+        );
         const dirty = await hasLocalChanges(ctx.$, repoRoot);
         if (!dirty) {
           return 'No deprecated Git session artifacts were found.';
         }
 
-        const branch = await resolveBranch(ctx, config, repoRoot);
         await commitAll(ctx.$, repoRoot, 'chore: remove deprecated git session artifacts');
         await pushBranch(ctx.$, repoRoot, branch);
         await updateState(locations, { lastPush: new Date().toISOString() });
@@ -1461,6 +1470,7 @@ async function runStartup(
     overridesPath: locations.overridesPath,
     allowMcpSecrets: canCommitMcpSecrets(config),
   });
+  await assertNoOversizedUnpushedHistory(ctx.$, repoRoot, branch);
   const changes = await hasLocalChanges(ctx.$, repoRoot);
   if (!changes) {
     log.debug('No local changes to push');
@@ -1474,6 +1484,61 @@ async function runStartup(
   await updateState(locations, {
     lastPush: new Date().toISOString(),
   });
+}
+
+async function assertNoOversizedUnpushedHistory(
+  $: Shell,
+  repoRoot: string,
+  branch: string,
+  preparedMessage = 'The working tree already contains the safe chunk representation.'
+): Promise<void> {
+  const inspection = await inspectOversizedUnpushedHistory($, repoRoot, branch);
+  if (inspection.oversizedPaths.length === 0) return;
+
+  const backupBranch = `opencode-synced-oversized-backup-${Date.now()}`;
+  const paths = inspection.oversizedPaths.map((filePath) => `  - ${filePath}`).join('\n');
+  const unsupportedPaths = inspection.oversizedPaths.filter(
+    (filePath) =>
+      !['data/opencode.db', 'data/opencode.db-wal', 'data/opencode.db-shm'].includes(filePath) &&
+      !filePath.startsWith('data/storage/message/')
+  );
+  const commands = inspection.remoteExists
+    ? [
+        `cd ${shellQuoteForInstructions(repoRoot)}`,
+        `git branch ${backupBranch}`,
+        `git reset --soft origin/${branch}`,
+        'git add -A',
+        'git commit -m "fix: recover chunked session files"',
+        `git push -u origin ${branch}`,
+      ]
+    : [
+        `cd ${shellQuoteForInstructions(repoRoot)}`,
+        `git branch ${backupBranch}`,
+        `git checkout --orphan ${branch}-recovered`,
+        'git add -A',
+        'git commit -m "fix: recover chunked session files"',
+        `git branch -M ${branch}`,
+        `git push -u origin ${branch}`,
+      ];
+  throw new SyncCommandError(
+    [
+      'Push stopped: unpushed commits still contain oversized Git blobs:',
+      paths,
+      '',
+      'opencode-synced will not rewrite local history automatically.',
+      unsupportedPaths.length === 0
+        ? preparedMessage
+        : `Before rebuilding, replace or remove these unsupported oversized working-tree paths: ${unsupportedPaths.join(', ')}`,
+      'To retain an exact backup and rebuild only the unpushed commits, review and run:',
+      ...commands.map((command) => `  ${command}`),
+      '',
+      `The original history remains available on branch ${backupBranch}.`,
+    ].join('\n')
+  );
+}
+
+function shellQuoteForInstructions(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 async function getConfigOrThrow(
