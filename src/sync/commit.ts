@@ -1,12 +1,19 @@
 import type { PluginInput } from '@opencode-ai/plugin';
-import { extractTextFromResponse, resolveSmallModel, unwrapData } from './utils.js';
 
-type CommitClient = PluginInput['client'];
+import {
+  type AiProvider,
+  buildCommitPrompt,
+  commitFallbackMessage,
+  createV1AiProvider,
+  sanitizeCommitMessage,
+} from './ai.js';
+
 type Shell = PluginInput['$'];
 
 interface CommitContext {
-  client: CommitClient;
+  client: PluginInput['client'];
   $: Shell;
+  ai?: AiProvider;
 }
 
 export async function generateCommitMessage(
@@ -14,61 +21,20 @@ export async function generateCommitMessage(
   repoDir: string,
   fallbackDate = new Date()
 ): Promise<string> {
-  const fallback = `Sync opencode config (${formatDate(fallbackDate)})`;
+  const fallback = commitFallbackMessage(fallbackDate);
 
   const diffSummary = await getDiffSummary(ctx.$, repoDir);
   if (!diffSummary) return fallback;
 
-  const model = await resolveSmallModel(ctx.client);
+  const ai = ctx.ai ?? createV1AiProvider(ctx.client);
+  const model = await ai.resolveModel();
   if (!model) return fallback;
 
-  const prompt = [
-    'Generate a concise single-line git commit message (max 72 chars).',
-    'Focus on opencode config sync changes.',
-    'Return only the message, no quotes.',
-    '',
-    'Diff summary:',
-    diffSummary,
-  ].join('\n');
+  const message = await ai.generateText(model, buildCommitPrompt(diffSummary));
+  if (!message) return fallback;
 
-  let sessionId: string | null = null;
-
-  try {
-    const sessionResult = await ctx.client.session.create({ body: { title: 'opencode-synced' } });
-    const session = unwrapData<{ id: string }>(sessionResult);
-    sessionId = session?.id ?? null;
-    if (!sessionId) return fallback;
-
-    const response = await ctx.client.session.prompt({
-      path: { id: sessionId },
-      body: {
-        model,
-        parts: [{ type: 'text', text: prompt }],
-      },
-    });
-
-    const message = extractTextFromResponse(unwrapData(response) ?? response);
-    if (!message) return fallback;
-
-    const sanitized = sanitizeMessage(message);
-    return sanitized || fallback;
-  } catch {
-    return fallback;
-  } finally {
-    if (sessionId) {
-      try {
-        await ctx.client.session.delete({ path: { id: sessionId } });
-      } catch {}
-    }
-  }
-}
-
-function sanitizeMessage(message: string): string {
-  const firstLine = message.split('\n')[0].trim();
-  const trimmed = firstLine.replace(/^["'`]+|["'`]+$/g, '').trim();
-  if (!trimmed) return '';
-  if (trimmed.length <= 72) return trimmed;
-  return trimmed.slice(0, 72).trim();
+  const sanitized = sanitizeCommitMessage(message);
+  return sanitized || fallback;
 }
 
 async function getDiffSummary($: Shell, repoDir: string): Promise<string> {
@@ -79,11 +45,4 @@ async function getDiffSummary($: Shell, repoDir: string): Promise<string> {
   } catch {
     return '';
   }
-}
-
-function formatDate(date: Date): string {
-  const year = String(date.getFullYear());
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
