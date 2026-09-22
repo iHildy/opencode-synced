@@ -4,15 +4,18 @@ import type { PluginInput } from '@opencode-ai/plugin';
 
 import {
   buildSyncToolInputSchema,
-  disableMcpServerForResolutionFailure,
   executeSyncCommand,
   loadCommands,
   type ParsedCommand,
+  SYNC_TOOL_COMMANDS,
   type SyncToolArgs,
+  type SyncToolCommand,
 } from './shared.js';
 import { createNodeShell } from './shell-node.js';
 import type { AiProvider } from './sync/ai.js';
 import {
+  blankEnvPlaceholders,
+  deepMerge,
   EnvPlaceholderResolutionError,
   isPlainObject,
   loadOverrides,
@@ -25,134 +28,194 @@ const PLUGIN_ID = 'opencode-synced';
 const OVERRIDES_DOC_POINTER =
   'opencode-synced: ignoring unsupported override key (v2 applies only mcp/agent/model/provider via domain transforms; see https://opencode.ai/v2/docs/build/plugins/migrate-v1)';
 
-interface ResolvedOverrides {
-  values: Record<string, unknown>;
-  /** Field paths (e.g. ['overrides','mcp','github',...]) that failed {env:…} resolution. */
-  failures: { fieldPath: readonly string[]; message: string }[];
+/** Prefix all v2 console output so it is greppable; v2 has no toast/log sink. */
+function v2Log(message: string): void {
+  console.log(`[opencode-synced] ${message}`);
 }
 
+function v2Warn(message: string): void {
+  console.warn(`[opencode-synced] ${message}`);
+}
+
+function v2Error(message: string): void {
+  console.error(`[opencode-synced] ${message}`);
+}
+
+interface OverrideFailure {
+  fieldPath: readonly string[];
+  message: string;
+}
+
+interface ResolvedOverrides {
+  /** Raw document as loaded (used for secret-free fallback configs). */
+  raw: Record<string, unknown>;
+  /** Per-top-level-key resolved values; keys with failures are omitted. */
+  values: Record<string, unknown>;
+  /** Field paths (e.g. ['overrides','mcp','github',...]) that failed {env:…} resolution. */
+  failures: OverrideFailure[];
+}
+
+/**
+ * Load overrides once and resolve `{env:…}` per top-level key.
+ * Single read avoids TOCTOU drift between the resolved values and the raw
+ * fallback used for disabled MCP servers.
+ */
 async function loadResolvedOverrides(): Promise<ResolvedOverrides | null> {
-  const overrides = await loadOverrides(resolveSyncLocations());
-  if (!overrides) return null;
+  const raw = await loadOverrides(resolveSyncLocations());
+  if (!raw) return null;
 
   const values: Record<string, unknown> = {};
-  const failures: ResolvedOverrides['failures'] = [];
-  for (const [key, value] of Object.entries(overrides)) {
+  const failures: OverrideFailure[] = [];
+  for (const [key, value] of Object.entries(raw)) {
     try {
       values[key] = resolveEnvPlaceholders(value, process.env, ['overrides', key]);
     } catch (error) {
       if (error instanceof EnvPlaceholderResolutionError) {
         failures.push({ fieldPath: error.fieldPath, message: error.message });
-        console.error(`[opencode-synced] ${error.message}`);
+        v2Error(error.message);
       } else {
         throw error;
       }
     }
   }
-  return { values, failures };
+  return { raw, values, failures };
 }
 
-function applyDeepMerge(target: Record<string, unknown>, source: unknown): void {
-  if (!isPlainObject(source)) return;
-  for (const [key, value] of Object.entries(source)) {
+/**
+ * Merge `partial` into a mutable domain-editor draft in place.
+ * Reuses the shared `deepMerge` so v1 (`applyOverridesToRuntimeConfig`) and
+ * v2 transforms share merge semantics (including prototype-safe assignment).
+ */
+function mergeIntoDraft(draft: Record<string, unknown>, partial: Record<string, unknown>): void {
+  const merged = deepMerge(draft, partial) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(merged)) {
     if (key === '__proto__') continue;
-    const current = target[key];
-    if (isPlainObject(value) && isPlainObject(current)) {
-      applyDeepMerge(current as Record<string, unknown>, value);
-    } else {
-      Object.defineProperty(target, key, {
-        value,
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    }
+    (draft as Record<string, unknown>)[key] = value;
   }
 }
 
-/** Blank any unresolvable {env:…} placeholders so a disabled server holds no secrets. */
-function blankPlaceholders(value: unknown): unknown {
-  if (typeof value === 'string') return value.replace(/\{env:[^}]+\}/g, '');
-  if (Array.isArray(value)) return value.map(blankPlaceholders);
-  if (isPlainObject(value)) {
-    const result: Record<string, unknown> = {};
-    for (const [key, nested] of Object.entries(value)) {
-      if (key === '__proto__') continue;
-      result[key] = blankPlaceholders(nested);
-    }
-    return result;
-  }
-  return value;
-}
-
-function failedServerNames(failures: ResolvedOverrides['failures']): Set<string> {
+function failedServerNames(failures: OverrideFailure[]): Set<string> {
   const names = new Set<string>();
   for (const failure of failures) {
     if (failure.fieldPath[0] === 'overrides' && failure.fieldPath[1] === 'mcp') {
       const serverName = failure.fieldPath[2];
-      if (serverName) names.add(serverName);
+      if (typeof serverName === 'string' && serverName) names.add(serverName);
     }
   }
   return names;
 }
 
-async function registerMcpTransform(
-  ctx: V2Context,
-  resolved: ResolvedOverrides,
-  raw: Record<string, unknown> | null
-): Promise<void> {
+async function registerMcpTransform(ctx: V2Context, resolved: ResolvedOverrides): Promise<void> {
   const mcp = isPlainObject(resolved.values.mcp)
     ? (resolved.values.mcp as Record<string, unknown>)
     : null;
   const failed = failedServerNames(resolved.failures);
-  const rawMcp = raw && isPlainObject(raw.mcp) ? (raw.mcp as Record<string, unknown>) : null;
+  const rawMcp = isPlainObject(resolved.raw.mcp)
+    ? (resolved.raw.mcp as Record<string, unknown>)
+    : null;
   if (!mcp && failed.size === 0) return;
 
-  await ctx.mcp.transform((editor) => {
-    if (mcp) {
-      for (const [name, config] of Object.entries(mcp)) {
-        if (!isPlainObject(config)) continue;
-        if (editor.get(name)) {
-          editor.update(name, (draft) => {
-            applyDeepMerge(draft as unknown as Record<string, unknown>, config);
-          });
-        } else {
-          editor.set(name, config as never);
-        }
-      }
+  // Snapshot plain-object configs up front so the replay callback is pure:
+  // no I/O, no logging, no closure mutation when core replays it.
+  const upserts = new Map<string, Record<string, unknown>>();
+  if (mcp) {
+    for (const [name, config] of Object.entries(mcp)) {
+      if (isPlainObject(config)) upserts.set(name, config as Record<string, unknown>);
     }
-    for (const name of failed) {
-      const rawConfig = rawMcp && isPlainObject(rawMcp[name]) ? rawMcp[name] : {};
-      const disabledConfig = {
-        ...(blankPlaceholders(rawConfig) as Record<string, unknown>),
-        disabled: true,
-      };
+  }
+  for (const name of failed) {
+    const rawConfig =
+      rawMcp && isPlainObject(rawMcp[name]) ? (rawMcp[name] as Record<string, unknown>) : {};
+    upserts.set(name, {
+      ...(blankEnvPlaceholders(rawConfig) as Record<string, unknown>),
+      disabled: true,
+    });
+  }
+
+  await ctx.mcp.transform((editor) => {
+    for (const [name, config] of upserts) {
       if (editor.get(name)) {
         editor.update(name, (draft) => {
-          applyDeepMerge(draft as unknown as Record<string, unknown>, disabledConfig);
+          mergeIntoDraft(draft as unknown as Record<string, unknown>, config);
         });
       } else {
-        editor.set(name, disabledConfig as never);
+        editor.set(name, config as never);
       }
-      // Mirror the v1 runtime-config fallback so status output stays consistent.
-      disableMcpServerForResolutionFailure({ mcp: { [name]: {} } }, ['overrides', 'mcp', name]);
     }
   });
+}
+
+/** Structural warnings that need no runtime state; unknown IDs are checked below. */
+function collectAgentWarnings(agents: unknown): string[] {
+  if (!isPlainObject(agents)) return [];
+  const warnings: string[] = [];
+  for (const [id, partial] of Object.entries(agents)) {
+    if (!isPlainObject(partial))
+      warnings.push(`Ignoring agent override for "${id}": not an object.`);
+  }
+  return warnings;
+}
+
+/** Unwrap `{data: [...]}` envelopes or plain arrays from list() APIs. */
+function asListItems(value: unknown): unknown[] {
+  const unwrapped =
+    isPlainObject(value) && 'data' in value ? (value as { data?: unknown }).data : value;
+  return Array.isArray(unwrapped) ? unwrapped : [];
+}
+
+function idOf(item: unknown): string | null {
+  if (typeof item === 'string') return item;
+  if (!isPlainObject(item)) return null;
+  const direct = (item as Record<string, unknown>).id;
+  if (typeof direct === 'string') return direct;
+  const provider = (item as Record<string, unknown>).provider;
+  if (isPlainObject(provider) && typeof provider.id === 'string') return provider.id;
+  const providerID = (item as Record<string, unknown>).providerID;
+  if (typeof providerID === 'string') return providerID;
+  return null;
+}
+
+/** Best-effort known-ID lookup; returns null when the host API is unavailable. */
+async function knownIds(listFn: () => Promise<unknown>): Promise<Set<string> | null> {
+  try {
+    const result = await listFn();
+    const ids = new Set<string>();
+    for (const item of asListItems(result)) {
+      const id = idOf(item);
+      if (id) ids.add(id);
+    }
+    return ids;
+  } catch {
+    return null;
+  }
 }
 
 async function registerAgentTransform(ctx: V2Context, resolved: ResolvedOverrides): Promise<void> {
   const agents = resolved.values.agent;
   if (!isPlainObject(agents)) return;
+  const snapshot = new Map<string, Record<string, unknown>>();
+  for (const [id, partial] of Object.entries(agents)) {
+    if (isPlainObject(partial)) snapshot.set(id, partial as Record<string, unknown>);
+  }
+  if (snapshot.size === 0) return;
+
+  // Best-effort unknown-agent warning outside the replay callback so replays
+  // stay side-effect-free. Agents cannot be created via the editor (update-only),
+  // so unknown IDs are skipped silently inside the transform.
+  const known = await knownIds(() => ctx.agent.list() as unknown as Promise<unknown>);
+  if (known) {
+    for (const id of snapshot.keys()) {
+      if (!known.has(id)) v2Warn(`Ignoring override for unknown agent "${id}".`);
+    }
+  }
+  for (const warning of collectAgentWarnings(agents)) v2Warn(warning);
 
   await ctx.agent.transform((editor) => {
-    for (const [id, partial] of Object.entries(agents)) {
-      if (!isPlainObject(partial)) continue;
+    for (const [id, partial] of snapshot) {
       if (editor.get(id)) {
         editor.update(id, (draft) => {
-          applyDeepMerge(draft as unknown as Record<string, unknown>, partial);
+          mergeIntoDraft(draft as unknown as Record<string, unknown>, partial);
         });
-      } else {
-        console.warn(`[opencode-synced] Ignoring override for unknown agent "${id}".`);
       }
     }
   });
@@ -162,28 +225,52 @@ async function registerModelTransform(ctx: V2Context, resolved: ResolvedOverride
   const models = resolved.values.model;
   if (!isPlainObject(models)) return;
 
-  await ctx.model.transform((editor) => {
-    for (const [providerID, providerModels] of Object.entries(models)) {
-      if (!isPlainObject(providerModels)) {
-        console.warn(
-          `[opencode-synced] Ignoring model override for "${providerID}". ${OVERRIDES_DOC_POINTER}: model`
-        );
-        continue;
+  const snapshot = new Map<string, Map<string, Record<string, unknown>>>();
+  const structuralWarnings: string[] = [];
+  for (const [providerID, providerModels] of Object.entries(models)) {
+    if (!isPlainObject(providerModels)) {
+      structuralWarnings.push(
+        `Ignoring model override for "${providerID}". ${OVERRIDES_DOC_POINTER}: model`
+      );
+      continue;
+    }
+    const perModel = new Map<string, Record<string, unknown>>();
+    for (const [modelID, partial] of Object.entries(providerModels)) {
+      if (isPlainObject(partial)) perModel.set(modelID, partial as Record<string, unknown>);
+    }
+    if (perModel.size > 0) snapshot.set(providerID, perModel);
+  }
+  if (snapshot.size === 0) {
+    for (const warning of structuralWarnings) v2Warn(warning);
+    return;
+  }
+
+  // Provider inventory lives on ctx.provider (ModelDomain has no provider
+  // accessor); warn outside the replay callback, guard with editor.get inside.
+  const knownProviders = await knownIds(() => ctx.provider.list() as unknown as Promise<unknown>);
+  if (knownProviders) {
+    for (const providerID of snapshot.keys()) {
+      if (!knownProviders.has(providerID)) {
+        v2Warn(`Ignoring override for unknown model provider "${providerID}".`);
       }
-      for (const [modelID, partial] of Object.entries(providerModels)) {
-        if (!isPlainObject(partial)) continue;
+    }
+  }
+  for (const warning of structuralWarnings) v2Warn(warning);
+
+  await ctx.model.transform((editor) => {
+    for (const [providerID, perModel] of snapshot) {
+      for (const [modelID, partial] of perModel) {
         if (editor.get(providerID, modelID)) {
           editor.update(providerID, modelID, (draft) => {
-            applyDeepMerge(draft as unknown as Record<string, unknown>, partial);
+            mergeIntoDraft(draft as unknown as Record<string, unknown>, partial);
           });
-        } else {
-          console.warn(
-            `[opencode-synced] Ignoring override for unknown model "${providerID}/${modelID}".`
-          );
         }
       }
     }
   });
+  // Unknown model IDs are skipped silently inside the replay callback (v2 has
+  // no model editor "has" bulk API); structural + provider warnings above cover
+  // the actionable cases without spamming on every replay.
 }
 
 async function registerProviderTransform(
@@ -192,16 +279,25 @@ async function registerProviderTransform(
 ): Promise<void> {
   const providers = resolved.values.provider;
   if (!isPlainObject(providers)) return;
+  const snapshot = new Map<string, Record<string, unknown>>();
+  for (const [providerID, partial] of Object.entries(providers)) {
+    if (isPlainObject(partial)) snapshot.set(providerID, partial as Record<string, unknown>);
+  }
+  if (snapshot.size === 0) return;
+
+  const known = await knownIds(() => ctx.provider.list() as unknown as Promise<unknown>);
+  if (known) {
+    for (const id of snapshot.keys()) {
+      if (!known.has(id)) v2Warn(`Ignoring override for unknown provider "${id}".`);
+    }
+  }
 
   await ctx.provider.transform((editor) => {
-    for (const [providerID, partial] of Object.entries(providers)) {
-      if (!isPlainObject(partial)) continue;
+    for (const [providerID, partial] of snapshot) {
       if (editor.get(providerID)) {
         editor.update(providerID, (draft) => {
-          applyDeepMerge(draft as unknown as Record<string, unknown>, partial);
+          mergeIntoDraft(draft as unknown as Record<string, unknown>, partial);
         });
-      } else {
-        console.warn(`[opencode-synced] Ignoring override for unknown provider "${providerID}".`);
       }
     }
   });
@@ -211,15 +307,20 @@ function warnOnRemainingOverrides(resolved: ResolvedOverrides): void {
   for (const key of Object.keys(resolved.values)) {
     if (key === 'mcp' || key === 'agent' || key === 'model' || key === 'provider') continue;
     if (key === 'command') {
-      console.warn(
-        '[opencode-synced] Ignoring "command" overrides in v2: sync commands are owned by this plugin. ' +
+      v2Warn(
+        'Ignoring "command" overrides in v2: sync commands are owned by this plugin. ' +
           'See https://opencode.ai/v2/docs/build/plugins/migrate-v1'
       );
       continue;
     }
-    console.warn(
-      `[opencode-synced] Ignoring unsupported override key "${key}". ${OVERRIDES_DOC_POINTER}: ${key}`
-    );
+    v2Warn(`Ignoring unsupported override key "${key}". ${OVERRIDES_DOC_POINTER}: ${key}`);
+  }
+  for (const failure of resolved.failures) {
+    if (failure.fieldPath[1] !== 'mcp') {
+      v2Warn(
+        `Ignoring override with unresolvable placeholder at "${failure.fieldPath.join('.')}": ${failure.message}`
+      );
+    }
   }
 }
 
@@ -227,8 +328,10 @@ function warnOnRemainingOverrides(resolved: ResolvedOverrides): void {
  * Minimal v1 client facade over v2 capabilities.
  *
  * V2 has no toasts and no session-status API, so toasts are no-ops (the service
- * also logs via app.log, which maps to console here) and session status always
- * reports idle, which skips Turso idle-gating and syncs immediately.
+ * also logs via app.log, which maps to console here). Session status returns an
+ * empty map, which `areAllSessionsIdle` treats as "no busy sessions" after its
+ * double-poll: Turso idle-gating is therefore intentionally skipped and Turso
+ * syncs run immediately in v2. Covered by `v2.test.ts` ("turso gating").
  */
 function createV2ClientFacade(): PluginInput['client'] {
   return {
@@ -290,39 +393,29 @@ function createV2AiProvider(ctx: V2Context): AiProvider {
   };
 }
 
-function toolCommandForName(name: string): SyncToolArgs['command'] | null {
+const SYNC_COMMAND_NAMES = new Set<string>(SYNC_TOOL_COMMANDS as readonly string[]);
+
+function toolCommandForName(name: string): SyncToolCommand | null {
   const suffix = name.startsWith('sync-') ? name.slice('sync-'.length) : name;
-  switch (suffix) {
-    case 'status':
-    case 'pull':
-    case 'push':
-    case 'resolve':
-    case 'secrets-pull':
-    case 'secrets-push':
-    case 'secrets-status':
-    case 'sessions-cleanup-git':
-      return suffix;
-    case 'init':
-    case 'link':
-      return suffix;
-    case 'enable-secrets':
-      return 'enable-secrets';
-    case 'sessions-backend':
-    case 'sessions-setup-turso':
-    case 'sessions-migrate-turso':
-      return suffix;
-    default:
-      return null;
-  }
+  return SYNC_COMMAND_NAMES.has(suffix) ? (suffix as SyncToolCommand) : null;
 }
 
-/** Parse a bare repo argument from a slash-command invocation (e.g. `/sync-link owner/repo`). */
+/**
+ * Parse a bare repo argument from a slash-command invocation
+ * (e.g. `/sync-link owner/repo`).
+ *
+ * V2 slash commands only carry free text (`prompt.text`), not structured tool
+ * args, so only a single bare `owner/repo` (or URL) is supported. Quoted
+ * multi-word input uses the first token; anything beyond `init`/`link` repo
+ * and `sessions-backend` backend is intentionally ignored (documented limit).
+ */
 export function parseCommandRepoArg(
   text: string | undefined,
   commandName: string
 ): string | undefined {
   if (!text) return undefined;
   let arg = text.trim();
+  if (!arg) return undefined;
   if (arg.startsWith('/')) {
     const firstSpace = arg.indexOf(' ');
     if (firstSpace === -1) return undefined;
@@ -331,7 +424,11 @@ export function parseCommandRepoArg(
     arg = arg.slice(commandName.length).trim();
   }
   if (arg.startsWith('$ARGUMENTS')) arg = arg.slice('$ARGUMENTS'.length).trim();
-  return arg || undefined;
+  if (!arg) return undefined;
+  // Strip surrounding quotes, then take the first whitespace-separated token.
+  arg = arg.replace(/^["']+|["']+$/g, '').trim();
+  const firstToken = arg.split(/\s+/)[0];
+  return firstToken || undefined;
 }
 
 async function executeV2Command(
@@ -388,8 +485,10 @@ export async function setupV2(ctx: V2Context): Promise<() => void> {
   });
 
   // Load + resolve {env:…} once before registering replayable transforms.
+  // NOTE: transforms are re-applied by core and never re-read disk; a config
+  // change requires host restart (or host-triggered `reload()`). No file
+  // watcher here by design — see docs/v2.md.
   const resolved = await loadResolvedOverrides();
-  const raw = await loadOverrides(resolveSyncLocations());
 
   await ctx.tool.transform((editor) => {
     editor.add({
@@ -398,11 +497,17 @@ export async function setupV2(ctx: V2Context): Promise<() => void> {
       input: buildSyncToolInputSchema() as never,
       execute: async (input) => {
         const result = await executeSyncCommand(service, input as unknown as SyncToolArgs);
-        return { content: result } as never;
+        // Tool.Result.content accepts string | Content[]; plain string keeps
+        // large status outputs readable without manual TextContent wrapping.
+        return { content: result };
       },
     });
   });
 
+  // V2 `CommandDefinition` only carries name/description/execute (no
+  // template/agent/model/subtask like v1 `config.command`). The markdown
+  // template is therefore executed directly via `executeV2Command` + synthetic
+  // reply instead of being registered as a prompt template.
   await ctx.command.transform((editor) => {
     for (const command of commands) {
       editor.add({
@@ -420,7 +525,7 @@ export async function setupV2(ctx: V2Context): Promise<() => void> {
   });
 
   if (resolved) {
-    await registerMcpTransform(ctx, resolved, raw);
+    await registerMcpTransform(ctx, resolved);
     await registerAgentTransform(ctx, resolved);
     await registerModelTransform(ctx, resolved);
     await registerProviderTransform(ctx, resolved);
@@ -433,24 +538,22 @@ export async function setupV2(ctx: V2Context): Promise<() => void> {
       try {
         await service.handleEvent(event);
       } catch (error) {
-        console.error(
-          `[opencode-synced] Event handling failed: ${error instanceof Error ? error.message : String(error)}`
-        );
+        v2Error(`Event handling failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   })();
 
   const timer = setTimeout(() => {
     void service.startupSync().catch((error: unknown) => {
-      console.error(
-        `[opencode-synced] Startup sync failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      v2Error(`Startup sync failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, 1000);
 
+  v2Log('v2 setup complete');
   return () => {
     clearTimeout(timer);
     controller.abort();
+    service.dispose();
   };
 }
 
