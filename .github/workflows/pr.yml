@@ -35,6 +35,21 @@ jobs:
           mise run test
           mise run build
 
+      - name: Assert dual v1/v2 entrypoint
+        run: |
+          bun -e '
+            const plugin = await import("./dist/index.js");
+            const entry = plugin.default ?? {};
+            for (const key of ["id", "setup", "server"]) {
+              if (typeof entry[key] !== "string" && typeof entry[key] !== "function") {
+                throw new Error(`dist default export is missing v1/v2 entrypoint member: ${key}`);
+              }
+            }
+            if (entry.id !== "opencode-synced") throw new Error(`unexpected plugin id: ${entry.id}`);
+            if (typeof plugin.opencodeConfigSync !== "function") throw new Error("missing v1 opencodeConfigSync export");
+            console.log("Dual v1/v2 entrypoint OK:", entry.id);
+          '
+
   WindowsPaths:
     runs-on: windows-latest
     steps:
