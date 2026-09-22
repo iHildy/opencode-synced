@@ -31,7 +31,7 @@ export function createNodeShell(): PluginInput['$'] {
     );
     const execution = execAsync(command, {
       maxBuffer: 32 * 1024 * 1024,
-    }) as NodeShellCommand;
+    }) as unknown as NodeShellCommand;
     execution.quiet = () => execution;
     execution.text = async () => (await execution).stdout;
     return execution;

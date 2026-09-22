@@ -1,6 +1,5 @@
 import type { Plugin } from '@opencode-ai/plugin';
 import { tool } from '@opencode-ai/plugin';
-
 import {
   disableMcpServerForResolutionFailure,
   executeSyncCommand,
@@ -14,6 +13,7 @@ import {
 } from './sync/config.js';
 import { resolveSyncLocations } from './sync/paths.js';
 import { createSyncService } from './sync/service.js';
+import { opencodeSyncedV2 } from './v2.js';
 
 export const opencodeConfigSync: Plugin = async (ctx) => {
   const commands = await loadCommands();
@@ -147,4 +147,18 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
 };
 
 export const opencodeSynced = opencodeConfigSync;
-export default opencodeConfigSync;
+
+export { opencodeSyncedV2 } from './v2.js';
+
+/**
+ * Dual v1 + v2 entrypoint.
+ *
+ * V2 calls `setup()` (registered via `Plugin.define`); v1 (>= 1.18.29 object
+ * entrypoints) calls `server()` with the v1 plugin context.
+ */
+export default {
+  ...opencodeSyncedV2,
+  async server(ctx: Parameters<Plugin>[0]) {
+    return await opencodeConfigSync(ctx);
+  },
+};
