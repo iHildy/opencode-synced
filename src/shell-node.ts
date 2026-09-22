@@ -21,6 +21,12 @@ interface NodeShellCommand extends Promise<{ stdout: string; stderr: string }> {
  * commands through this shim. Interpolated values are single-quote escaped,
  * matching v1 behavior. `.quiet()` is a no-op kept for call-site compatibility,
  * `.text()` resolves stdout, and awaiting the command throws on non-zero exit.
+ *
+ * Differences from Bun `$` to be aware of when debugging service failures:
+ * - Runs via `child_process.exec` (`/bin/sh`), not bash; keep commands POSIX.
+ * - No `cwd`/`env` options; inherits the plugin host process env.
+ * - `maxBuffer` is 32 MiB; larger git output throws `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`.
+ * - Rejection is an `exec` Error (with `stdout`/`stderr` props), not a Bun ShellError.
  */
 export function createNodeShell(): PluginInput['$'] {
   const shell = (strings: TemplateStringsArray, ...values: unknown[]): NodeShellCommand => {
