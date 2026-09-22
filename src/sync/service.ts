@@ -124,6 +124,8 @@ export interface SyncService {
   sessionsMigrateTurso: (_options?: { setupTurso?: boolean }) => Promise<string>;
   sessionsCleanupGit: () => Promise<string>;
   resolve: () => Promise<string>;
+  /** Stop background timers (Turso sync loop + idle flush). Idempotent. */
+  dispose: () => void;
 }
 
 export function createSyncService(ctx: SyncServiceContext): SyncService {
@@ -1395,6 +1397,9 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         return `Unable to automatically resolve. Please manually resolve in: ${repoRoot}`;
       }),
+    dispose: () => {
+      stopTursoSyncLoop();
+    },
   };
 }
 
