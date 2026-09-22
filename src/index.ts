@@ -13,7 +13,7 @@ import {
 } from './sync/config.js';
 import { resolveSyncLocations } from './sync/paths.js';
 import { createSyncService } from './sync/service.js';
-import { opencodeSyncedV2 } from './v2.js';
+import { setupV2 } from './v2.js';
 
 export const opencodeConfigSync: Plugin = async (ctx) => {
   const commands = await loadCommands();
@@ -154,11 +154,16 @@ export { opencodeSyncedV2 } from './v2.js';
  * Dual v1 + v2 entrypoint.
  *
  * V2 calls `setup()` (registered via `Plugin.define`); v1 (>= 1.18.29 object
- * entrypoints) calls `server()` with the v1 plugin context.
+ * entrypoints) calls `server()` with the v1 plugin context. Fields are listed
+ * explicitly (no spread) so adding a field to one runtime cannot silently leak
+ * into the other.
  */
-export default {
-  ...opencodeSyncedV2,
+const pluginDefault = {
+  id: 'opencode-synced' as const,
+  setup: setupV2,
   async server(ctx: Parameters<Plugin>[0]) {
     return await opencodeConfigSync(ctx);
   },
 };
+
+export default pluginDefault;
