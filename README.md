@@ -18,15 +18,27 @@ an explicit-URL path for pre-created remotes.
 - Git installed and available on PATH
 - GitHub CLI (`gh`) installed and authenticated (`gh auth login`) when using automatic GitHub
   creation, discovery, or privacy verification
+- opencode v1 `>= 1.18.29` **or** opencode v2 `^2.0.0` (one package supports both runtimes)
 
 ## Setup
 
-Enable the plugin in your global opencode config (opencode will install it on next run):
+Enable the plugin in your global opencode config (opencode will install it on next run).
+
+For opencode v1:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": ["opencode-synced"],
+}
+```
+
+For opencode v2:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-synced"],
 }
 ```
 
@@ -350,7 +362,7 @@ bun -e '
 ```
 
 ### Manual steps
-1. Remove `"opencode-synced"` from the `plugin` array in `~/.config/opencode/opencode.json` (or `.jsonc`).
+1. Remove `"opencode-synced"` from the `plugin` array in `~/.config/opencode/opencode.json` (or `.jsonc`; v2 uses the `plugins` key).
 2. Delete the local configuration and state:
    ```bash
    rm ~/.config/opencode/opencode-synced.jsonc
