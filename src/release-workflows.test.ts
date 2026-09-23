@@ -59,6 +59,18 @@ describe('release workflows', () => {
     expect(smokeWorkflow).toContain('Expected exact version $REQUESTED_VERSION');
   });
 
+  it('keeps the GitHub token out of the external OpenCode installer step', () => {
+    expect(smokeWorkflow).toContain('GH_TOKEN: $' + '{{ github.token }}');
+    expect(smokeWorkflow).toContain(
+      "gh api repos/anomalyco/opencode/releases/latest --jq '.tag_name'"
+    );
+    expect(smokeWorkflow).toContain(
+      'OPENCODE_VERSION: $' + '{{ steps.opencode-version.outputs.version }}'
+    );
+    expect(smokeWorkflow).toContain('bash -s -- --version "$OPENCODE_VERSION" --no-modify-path');
+    expect(smokeWorkflow).not.toContain('curl -fsSL https://opencode.ai/install | bash');
+  });
+
   it('uses string comparisons for release-please boolean outputs and frozen setup', () => {
     expect(releaseWorkflow).toContain("outputs.releases_created == 'true'");
     expect(releaseWorkflow).toContain("outputs.prs_created == 'true'");
