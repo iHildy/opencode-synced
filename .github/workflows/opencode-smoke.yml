@@ -95,7 +95,7 @@ jobs:
           set -euo pipefail
           OPENCODE_VERSION=$(gh api repos/anomalyco/opencode/releases/latest --jq '.tag_name')
           if [[ ! "$OPENCODE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid OpenCode release version: $OPENCODE_VERSION"
+            echo "[ERROR] Invalid OpenCode release version: $OPENCODE_VERSION"
             exit 1
           fi
           echo "version=$OPENCODE_VERSION" >> "$GITHUB_OUTPUT"
