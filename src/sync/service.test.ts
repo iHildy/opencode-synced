@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 
 import type { PluginInput } from '@opencode-ai/plugin';
 import { describe, expect, it } from 'vitest';
-import { loadState, loadSyncConfig, writeSyncConfig } from './config.js';
+import { loadState, loadSyncConfig, writeState, writeSyncConfig } from './config.js';
 import { resolveSyncLocations } from './paths.js';
 import { createSyncService } from './service.js';
 
@@ -169,6 +169,10 @@ describe('explicit Git remote service flow', () => {
       });
 
       await expect(readSessionTitle(machineBDbPath)).resolves.toBe('Machine A');
+      const stateAfterLink = await loadState(machineBLocations);
+      expect(stateAfterLink.lastRemoteUpdate).toBeDefined();
+      await writeState(machineBLocations, { ...stateAfterLink, lastPull: undefined });
+      await expect(machineBService.status()).resolves.toContain('Last pull: never');
 
       await writeSqlite(machineBDbPath, 'DELETE FROM session;');
 
@@ -179,6 +183,9 @@ describe('explicit Git remote service flow', () => {
 
       await expect(machineBService.pull()).resolves.toContain('Restart opencode to load them');
       await expect(readSessionTitle(machineBDbPath)).resolves.toBe('Machine A');
+      await expect(machineBService.status()).resolves.toMatch(/Last pull: \d{4}-\d\d-\d\dT/u);
+      const stateAfterPull = await loadState(machineBLocations);
+      expect(stateAfterPull.lastRemoteUpdate).toBe(stateAfterLink.lastRemoteUpdate);
       await expect(
         fs.readFile(path.join(machineBLocations.configRoot, 'opencode.json'), 'utf8')
       ).resolves.toContain('local');

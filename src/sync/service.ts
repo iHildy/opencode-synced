@@ -998,6 +998,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           const tursoSummary = await runForegroundTursoCycle(config, 'pull-up-to-date');
           ensureTursoSyncLoop(config);
           if (restoredSessions) {
+            await updateState(locations, { lastPull: new Date().toISOString() });
             await showToast(
               ctx.client,
               'Sessions restored. Restart opencode to load them.',
