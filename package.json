@@ -24,7 +24,8 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "@opencode-ai/plugin": "1.0.85"
+    "@opencode-ai/plugin": "^1.18.29",
+    "@opencode/plugin": "^2.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.10",

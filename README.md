@@ -18,10 +18,13 @@ an explicit-URL path for pre-created remotes.
 - Git installed and available on PATH
 - GitHub CLI (`gh`) installed and authenticated (`gh auth login`) when using automatic GitHub
   creation, discovery, or privacy verification
+- opencode v1 `>= 1.18.29` **or** opencode v2 `^2.0.0` (one package supports both runtimes)
 
 ## Setup
 
-Enable the plugin in your global opencode config (opencode will install it on next run):
+Enable the plugin in your global opencode config (opencode will install it on next run).
+
+For opencode v1:
 
 ```jsonc
 {
@@ -30,13 +33,29 @@ Enable the plugin in your global opencode config (opencode will install it on ne
 }
 ```
 
+For opencode v2:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-synced"],
+}
+```
+
 opencode does not auto-update plugins. To update, modify the version number in your config file.
+
+On v2, use the `opencode_sync` tool for sync operations. The `/sync-*` slash
+commands are available on v1 only. V2 cannot display a slash command's direct
+result without placing it in the model's prompt queue, which could trigger
+another operation. For example, ask OpenCode to call `opencode_sync` with
+`{"command":"status"}` to inspect the current state.
 
 ## Configure
 
 ### First machine (create new sync repo)
 
-Run `/sync-init` to create a new sync repo:
+On v1, run `/sync-init` to create a new sync repo. On v2, ask OpenCode to call
+`opencode_sync` with `{"command":"init"}`:
 
 1. Detects your GitHub username
 2. Creates a private repo (`my-opencode-config` by default)
@@ -44,13 +63,15 @@ Run `/sync-init` to create a new sync repo:
 
 ### Additional machines (link to existing repo)
 
-Run `/sync-link` to connect to your existing sync repo:
+On v1, run `/sync-link` to connect to your existing sync repo. On v2, ask
+OpenCode to call `opencode_sync` with `{"command":"link"}`:
 
 1. Searches your GitHub for common sync repo names (prioritizes `my-opencode-config`)
 2. Clones and applies the synced config
 3. **Overwrites local config** with synced content (preserves your local overrides file)
 
-If auto-detection fails, specify the repo name: `/sync-link my-opencode-config`
+If auto-detection fails, specify the repo name with `/sync-link my-opencode-config`
+on v1 or `{"command":"link","repo":"my-opencode-config"}` on v2.
 
 After linking, restart opencode to apply the synced settings.
 
@@ -353,7 +374,7 @@ bun -e '
 ```
 
 ### Manual steps
-1. Remove `"opencode-synced"` from the `plugin` array in `~/.config/opencode/opencode.json` (or `.jsonc`).
+1. Remove `"opencode-synced"` from the `plugin` array in `~/.config/opencode/opencode.json` (or `.jsonc`; v2 uses the `plugins` key).
 2. Delete the local configuration and state:
    ```bash
    rm ~/.config/opencode/opencode-synced.jsonc

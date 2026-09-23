@@ -398,6 +398,26 @@ export function resolveEnvPlaceholders(
   return value;
 }
 
+/**
+ * Blank `{env:…}` placeholders without throwing, using the same pattern as
+ * {@link resolveEnvPlaceholders}. Used in v2 to store a secret-free copy of an
+ * MCP server whose env var is missing (the server is also marked disabled).
+ * Prototype keys are skipped so the result is safe to pass to domain editors.
+ */
+export function blankEnvPlaceholders(value: unknown): unknown {
+  if (typeof value === 'string') return value.replace(/\{env:([^}]+)\}/g, '');
+  if (Array.isArray(value)) return value.map(blankEnvPlaceholders);
+  if (isPlainObject(value)) {
+    const result: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value)) {
+      if (key === '__proto__') continue;
+      defineOwnValue(result, key, blankEnvPlaceholders(nested));
+    }
+    return result;
+  }
+  return value;
+}
+
 export function deepMerge<T>(base: T, override: unknown): T {
   if (!isPlainObject(base) || !isPlainObject(override)) {
     return (override === undefined ? base : override) as T;

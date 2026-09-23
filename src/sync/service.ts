@@ -3,6 +3,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import type { PluginInput } from '@opencode-ai/plugin';
+import {
+  type AiProvider,
+  buildResolvePrompt,
+  createV1AiProvider,
+  parseResolutionDecision,
+  type ResolutionDecision,
+} from './ai.js';
 import { syncLocalToRepo, syncRepoToLocal, syncSessionArtifactsRepoToLocal } from './apply.js';
 import { generateCommitMessage } from './commit.js';
 import type { NormalizedSyncConfig } from './config.js';
@@ -56,15 +63,9 @@ import {
   isRetryableTursoError,
   type TursoSyncPreference,
 } from './turso.js';
-import {
-  createLogger,
-  extractTextFromResponse,
-  resolveSmallModel,
-  showToast,
-  unwrapData,
-} from './utils.js';
+import { createLogger, showToast, unwrapData } from './utils.js';
 
-type SyncServiceContext = Pick<PluginInput, 'client' | '$'>;
+type SyncServiceContext = Pick<PluginInput, 'client' | '$'> & { ai?: AiProvider };
 type Logger = ReturnType<typeof createLogger>;
 type Shell = PluginInput['$'];
 
@@ -123,6 +124,8 @@ export interface SyncService {
   sessionsMigrateTurso: (_options?: { setupTurso?: boolean }) => Promise<string>;
   sessionsCleanupGit: () => Promise<string>;
   resolve: () => Promise<string>;
+  /** Stop background timers (Turso sync loop + idle flush). Idempotent. */
+  dispose: () => void;
 }
 
 export function createSyncService(ctx: SyncServiceContext): SyncService {
@@ -1089,7 +1092,10 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           }
         }
 
-        const message = await generateCommitMessage({ client: ctx.client, $: ctx.$ }, repoRoot);
+        const message = await generateCommitMessage(
+          { client: ctx.client, $: ctx.$, ai: ctx.ai },
+          repoRoot
+        );
         await commitAll(ctx.$, repoRoot, message);
         await pushBranch(ctx.$, repoRoot, branch);
 
@@ -1384,7 +1390,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const status = await getRepoStatus(ctx.$, repoRoot);
         const decision = await analyzeAndDecideResolution(
-          { client: ctx.client, $: ctx.$ },
+          { client: ctx.client, $: ctx.$, ai: ctx.ai },
           repoRoot,
           status.changes
         );
@@ -1407,6 +1413,9 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         return `Unable to automatically resolve. Please manually resolve in: ${repoRoot}`;
       }),
+    dispose: () => {
+      stopTursoSyncLoop();
+    },
   };
 }
 
@@ -1493,7 +1502,10 @@ async function runStartup(
     return;
   }
 
-  const message = await generateCommitMessage({ client: ctx.client, $: ctx.$ }, repoRoot);
+  const message = await generateCommitMessage(
+    { client: ctx.client, $: ctx.$, ai: ctx.ai },
+    repoRoot
+  );
   log.info('Pushing local changes', { message });
   await commitAll(ctx.$, repoRoot, message);
   await pushBranch(ctx.$, repoRoot, branch);
@@ -1730,108 +1742,30 @@ function isBusySessionStatus(status: unknown): boolean {
   return true;
 }
 
-interface ResolutionDecision {
-  action: 'commit' | 'reset' | 'manual';
-  message?: string;
-  reason?: string;
-}
-
 async function analyzeAndDecideResolution(
-  ctx: { client: SyncServiceContext['client']; $: Shell },
+  ctx: { client: SyncServiceContext['client']; $: Shell; ai?: AiProvider },
   repoRoot: string,
   changes: string[]
 ): Promise<ResolutionDecision> {
   try {
     const diff = await ctx.$`git -C ${repoRoot} diff HEAD`.quiet().text();
-    const statusOutput = changes.join('\n');
+    const prompt = buildResolvePrompt(changes.join('\n'), diff.slice(0, 2000));
 
-    const prompt = [
-      'You are analyzing uncommitted changes in an opencode-synced repository.',
-      'Decide whether to commit these changes or discard them.',
-      '',
-      'IMPORTANT: Only choose "commit" if the changes appear to be legitimate config updates.',
-      'Choose "discard" if the changes look like temporary files, cache, or corruption.',
-      '',
-      'Respond with ONLY a JSON object in this exact format:',
-      '{"action": "commit", "message": "your commit message here"}',
-      'OR',
-      '{"action": "discard", "reason": "explanation why discarding"}',
-      '',
-      'Status:',
-      statusOutput,
-      '',
-      'Diff preview (first 2000 chars):',
-      diff.slice(0, 2000),
-    ].join('\n');
-
-    const model = await resolveSmallModel(ctx.client);
+    const ai = ctx.ai ?? createV1AiProvider(ctx.client);
+    const model = await ai.resolveModel();
     if (!model) {
       return { action: 'manual', reason: 'No AI model available' };
     }
 
-    let sessionId: string | null = null;
-    try {
-      const sessionResult = await ctx.client.session.create({
-        body: { title: 'sync-resolve' },
-      });
-      const session = unwrapData<{ id: string }>(sessionResult);
-      sessionId = session?.id ?? null;
-      if (!sessionId) {
-        return { action: 'manual', reason: 'Failed to create session' };
-      }
-
-      const response = await ctx.client.session.prompt({
-        path: { id: sessionId },
-        body: {
-          model,
-          parts: [{ type: 'text', text: prompt }],
-        },
-      });
-
-      const messageText = extractTextFromResponse(unwrapData(response) ?? response);
-      if (!messageText) {
-        return { action: 'manual', reason: 'No response from AI' };
-      }
-
-      const decision = parseResolutionDecision(messageText);
-      return decision;
-    } finally {
-      if (sessionId) {
-        try {
-          await ctx.client.session.delete({ path: { id: sessionId } });
-        } catch {}
-      }
+    const messageText = await ai.generateText(model, prompt);
+    if (!messageText) {
+      return { action: 'manual', reason: 'No response from AI' };
     }
+
+    return parseResolutionDecision(messageText);
   } catch (error) {
     console.error('[ERROR] AI resolution analysis failed:', error);
     return { action: 'manual', reason: `Error analyzing changes: ${formatError(error)}` };
-  }
-}
-
-function parseResolutionDecision(text: string): ResolutionDecision {
-  try {
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return { action: 'manual', reason: 'Could not parse AI response' };
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as {
-      action?: string;
-      message?: string;
-      reason?: string;
-    };
-
-    if (parsed.action === 'commit' && parsed.message) {
-      return { action: 'commit', message: parsed.message };
-    }
-
-    if (parsed.action === 'discard') {
-      return { action: 'reset', reason: parsed.reason };
-    }
-
-    return { action: 'manual', reason: 'Unexpected AI response format' };
-  } catch {
-    return { action: 'manual', reason: 'Failed to parse AI decision' };
   }
 }
 
