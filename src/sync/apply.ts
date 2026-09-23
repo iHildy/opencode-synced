@@ -69,6 +69,23 @@ export async function syncRepoToLocal(
   }
 }
 
+export async function syncSessionArtifactsRepoToLocal(
+  plan: SyncPlan,
+  options: { chunkOptions?: ChunkOptions } = {}
+): Promise<boolean> {
+  let restored = false;
+  for (const item of plan.items) {
+    if (!item.preserveWhenMissing || !(await pathExists(item.repoPath))) continue;
+    if (item.chunkLargeFiles) {
+      await copyChunkableItemFromRepo(item, plan.repoRoot, options.chunkOptions);
+    } else {
+      await copyItem(item.repoPath, item.localPath, item.type);
+    }
+    restored = true;
+  }
+  return restored;
+}
+
 export async function syncLocalToRepo(
   plan: SyncPlan,
   overrides: Record<string, unknown> | null,
