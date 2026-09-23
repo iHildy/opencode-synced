@@ -19,6 +19,10 @@ All notable changes to this project will be documented here by Release Please.
 
 * Pin the remaining GitHub Actions to immutable commits ([#82](https://github.com/iHildy/opencode-synced/pull/82)).
 
+### Release Reliability
+
+* Authenticate OpenCode version lookup in the macOS prepublish smoke without exposing the token to its installer ([#87](https://github.com/iHildy/opencode-synced/pull/87)).
+
 ### Documentation
 
 * Explain v1/v2 requirements, configuration keys, and the Node shell shim ([#84](https://github.com/iHildy/opencode-synced/pull/84)).
