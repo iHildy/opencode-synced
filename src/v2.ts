@@ -54,14 +54,15 @@ interface OverrideFailure {
 interface ResolvedOverrides {
   /** Raw document as loaded (used for secret-free fallback configs). */
   raw: Record<string, unknown>;
-  /** Per-top-level-key resolved values; keys with failures are omitted. */
+  /** Resolved values; MCP servers are independent so one failure preserves siblings. */
   values: Record<string, unknown>;
   /** Field paths (e.g. ['overrides','mcp','github',...]) that failed {env:…} resolution. */
   failures: OverrideFailure[];
 }
 
 /**
- * Load overrides once and resolve `{env:…}` per top-level key.
+ * Load overrides once and resolve `{env:…}` per top-level key, except MCP
+ * servers, which must fail independently.
  * Single read avoids TOCTOU drift between the resolved values and the raw
  * fallback used for disabled MCP servers.
  */
@@ -72,6 +73,24 @@ async function loadResolvedOverrides(): Promise<ResolvedOverrides | null> {
   const values: Record<string, unknown> = {};
   const failures: OverrideFailure[] = [];
   for (const [key, value] of Object.entries(raw)) {
+    if (key === 'mcp' && isPlainObject(value)) {
+      const resolvedMcp: Record<string, unknown> = {};
+      for (const [name, config] of Object.entries(value)) {
+        if (name === '__proto__') {
+          v2Error('Unsafe local override field "overrides.mcp.__proto__" is not allowed.');
+          continue;
+        }
+        try {
+          resolvedMcp[name] = resolveEnvPlaceholders(config, process.env, ['overrides', key, name]);
+        } catch (error) {
+          if (!(error instanceof EnvPlaceholderResolutionError)) throw error;
+          failures.push({ fieldPath: error.fieldPath, message: error.message });
+          v2Error(error.message);
+        }
+      }
+      values[key] = resolvedMcp;
+      continue;
+    }
     try {
       values[key] = resolveEnvPlaceholders(value, process.env, ['overrides', key]);
     } catch (error) {

@@ -333,6 +333,88 @@ describe('v2 setup', () => {
     });
   });
 
+  it('keeps a valid mcp sibling when another server has an unresolvable placeholder', async () => {
+    await withIsolatedHome(async () => {
+      const locations = resolveSyncLocations();
+      await fs.mkdir(locations.configRoot, { recursive: true });
+      await fs.writeFile(
+        locations.overridesPath,
+        JSON.stringify({
+          mcp: {
+            good: {
+              type: 'remote',
+              url: 'https://good.test/mcp',
+              headers: { Authorization: 'Bearer {env:V2_SET_PAT}' },
+            },
+            bad: {
+              type: 'remote',
+              url: 'https://bad.test/mcp',
+              headers: { Authorization: 'Bearer {env:V2_MISSING_PAT}' },
+            },
+          },
+        }),
+        'utf8'
+      );
+      process.env.V2_SET_PAT = 'test-token';
+      delete process.env.V2_MISSING_PAT;
+
+      const originalError = console.error;
+      console.error = () => {};
+      try {
+        const mock = createMockCtx();
+        const cleanup = await setupV2(mock.ctx as never);
+        try {
+          expect(mock.mcpSets).toHaveLength(2);
+          expect(Object.fromEntries(mock.mcpSets)).toMatchObject({
+            good: { headers: { Authorization: 'Bearer test-token' } },
+            bad: { disabled: true, headers: { Authorization: 'Bearer ' } },
+          });
+          expect(JSON.stringify(mock.mcpSets)).not.toContain('{env:');
+        } finally {
+          cleanup();
+        }
+      } finally {
+        console.error = originalError;
+        delete process.env.V2_SET_PAT;
+      }
+    });
+  });
+
+  it('rejects an unsafe mcp server key without discarding safe siblings', async () => {
+    await withIsolatedHome(async () => {
+      const locations = resolveSyncLocations();
+      await fs.mkdir(locations.configRoot, { recursive: true });
+      await fs.writeFile(
+        locations.overridesPath,
+        '{"mcp":{"__proto__":{"type":"remote","url":"https://unsafe.test/mcp"},"good":{"type":"remote","url":"https://good.test/mcp"}}}',
+        'utf8'
+      );
+
+      const errors: unknown[][] = [];
+      const originalError = console.error;
+      console.error = (...args: unknown[]) => {
+        errors.push(args);
+      };
+      try {
+        const mock = createMockCtx();
+        const cleanup = await setupV2(mock.ctx as never);
+        try {
+          expect(mock.mcpSets).toEqual([
+            ['good', { type: 'remote', url: 'https://good.test/mcp' }],
+          ]);
+          expect(
+            errors.some((args) => JSON.stringify(args).includes('Unsafe local override'))
+          ).toBe(true);
+          expect(Object.prototype).not.toHaveProperty('type');
+        } finally {
+          cleanup();
+        }
+      } finally {
+        console.error = originalError;
+      }
+    });
+  });
+
   it('warns once for unknown agent/provider overrides and keeps replays pure', async () => {
     await withIsolatedHome(async () => {
       const locations = resolveSyncLocations();
