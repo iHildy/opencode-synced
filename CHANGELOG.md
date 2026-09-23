@@ -7,21 +7,21 @@ All notable changes to this project will be documented here by Release Please.
 
 ### Features
 
-* add injectable AI provider and node shell shim for v2 ([c21227b](https://github.com/iHildy/opencode-synced/commit/c21227b3f1f84bd46040f2e8b5cf31d8be6d3e6d))
-* add shared blankEnvPlaceholders helper ([1e6ab65](https://github.com/iHildy/opencode-synced/commit/1e6ab65d3af10e27128f51549dd88598754de7a6))
-* add SyncService.dispose for background timers ([c703436](https://github.com/iHildy/opencode-synced/commit/c703436555d3cbfa54901713ede912ce689cde16))
-* support opencode v2 plugin API alongside v1 ([f16dec2](https://github.com/iHildy/opencode-synced/commit/f16dec2126de9dbb199d89b1ce1eab63d73c31a2))
-* support OpenCode v2 with safe sync tool commands ([d549b0f](https://github.com/iHildy/opencode-synced/commit/d549b0fa8e4e927a0f98c3388e484e5eb4014078))
+* Support OpenCode v2 alongside v1 with explicit dual entrypoints and safe sync tool commands ([#84](https://github.com/iHildy/opencode-synced/pull/84)).
 
 
 ### Bug Fixes
 
-* keep v2 sync status read-only ([4a6c51d](https://github.com/iHildy/opencode-synced/commit/4a6c51d02a27b2fd148791c1e1e9c98b57541fb4))
-* preserve valid v2 MCP override siblings ([5f4f15e](https://github.com/iHildy/opencode-synced/commit/5f4f15e547e6bc41f999b70917a3b3108f1ace0d))
-* record session restoration as a pull ([2c65e4d](https://github.com/iHildy/opencode-synced/commit/2c65e4d7faa301696efe22ca6c9be12e3afc1804))
-* restore Git sessions on link and pull ([c475c61](https://github.com/iHildy/opencode-synced/commit/c475c61468533a5c68288c9956a3998154c57c36))
-* restore Git sessions on link and pull ([a7fc170](https://github.com/iHildy/opencode-synced/commit/a7fc17044372ea299194822db37ed8edb04ec8c6))
-* use explicit dual entrypoint fields ([2343c84](https://github.com/iHildy/opencode-synced/commit/2343c8474a401fbb8e6c6f1f5ccc4d79ea7f977a))
+* Restore synced Git sessions on link and pull across machines ([#83](https://github.com/iHildy/opencode-synced/pull/83), [#51](https://github.com/iHildy/opencode-synced/issues/51)).
+* Keep v2 sync status read-only and preserve valid MCP server overrides when another server lacks secrets ([#84](https://github.com/iHildy/opencode-synced/pull/84)).
+
+### Security
+
+* Pin the remaining GitHub Actions to immutable commits ([#82](https://github.com/iHildy/opencode-synced/pull/82)).
+
+### Documentation
+
+* Explain v1/v2 requirements, configuration keys, and the Node shell shim ([#84](https://github.com/iHildy/opencode-synced/pull/84)).
 
 ## [0.10.1](https://github.com/iHildy/opencode-synced/compare/v0.10.0...v0.10.1) (2026-08-31)
 
