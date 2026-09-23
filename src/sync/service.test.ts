@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 
 import type { PluginInput } from '@opencode-ai/plugin';
 import { describe, expect, it } from 'vitest';
-import { loadState, loadSyncConfig, writeSyncConfig } from './config.js';
+import { loadState, loadSyncConfig, writeState, writeSyncConfig } from './config.js';
 import { resolveSyncLocations } from './paths.js';
 import { createSyncService } from './service.js';
 
@@ -110,6 +110,88 @@ async function withIsolatedEnvironment(run: (root: string) => Promise<void>): Pr
 }
 
 describe('explicit Git remote service flow', () => {
+  it('restores sessions on link and an up-to-date pull', async () => {
+    await withIsolatedEnvironment(async (root) => {
+      const testShell = createTestShell();
+      const writeSqlite = async (dbPath: string, sql: string): Promise<void> => {
+        const script =
+          'import sqlite3, sys; db = sqlite3.connect(sys.argv[1]); db.executescript(sys.argv[2]); db.commit(); db.close()';
+        await testShell`python3 -c ${script} ${dbPath} ${sql}`.quiet();
+      };
+      const readSessionTitle = async (dbPath: string): Promise<string> => {
+        const script =
+          'import sqlite3, sys; db = sqlite3.connect(sys.argv[1]); row = db.execute("SELECT title FROM session WHERE id = ?", ("ses_issue_51",)).fetchone(); print(row[0] if row else ""); db.close()';
+        return (await testShell`python3 -c ${script} ${dbPath}`.text()).trim();
+      };
+      const remotePath = path.join(root, 'sync-remote.git');
+      await testShell`git init --bare ${remotePath}`.quiet();
+
+      const machineAHome = path.join(root, 'machine-a');
+      useIsolatedHome(machineAHome);
+      const machineALocations = resolveSyncLocations();
+      await fs.mkdir(machineALocations.configRoot, { recursive: true });
+      await fs.writeFile(path.join(machineALocations.configRoot, 'opencode.json'), '{}\n');
+      const machineADbPath = path.join(machineALocations.xdg.dataDir, 'opencode', 'opencode.db');
+      await fs.mkdir(path.dirname(machineADbPath), { recursive: true });
+      await writeSqlite(
+        machineADbPath,
+        "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT); INSERT INTO session VALUES ('ses_issue_51', 'Machine A');"
+      );
+
+      const machineAService = createSyncService({ client: createClient(), $: testShell });
+      await machineAService.init({
+        repo: remotePath,
+        branch: 'main',
+        includeSecrets: true,
+        includeSessions: true,
+        acknowledgePrivateRemote: true,
+      });
+
+      useIsolatedHome(path.join(root, 'machine-unacknowledged'));
+      const unacknowledgedLocations = resolveSyncLocations();
+      const unacknowledgedService = createSyncService({ client: createClient(), $: testShell });
+      await expect(
+        unacknowledgedService.link({ repo: remotePath, branch: 'main' })
+      ).rejects.toThrow('privacy cannot be verified');
+      await expect(
+        fs.stat(path.join(unacknowledgedLocations.xdg.dataDir, 'opencode', 'opencode.db'))
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const machineBHome = path.join(root, 'machine-b');
+      useIsolatedHome(machineBHome);
+      const machineBLocations = resolveSyncLocations();
+      const machineBDbPath = path.join(machineBLocations.xdg.dataDir, 'opencode', 'opencode.db');
+      const machineBService = createSyncService({ client: createClient(), $: testShell });
+      await machineBService.link({
+        repo: remotePath,
+        branch: 'main',
+        acknowledgePrivateRemote: true,
+      });
+
+      await expect(readSessionTitle(machineBDbPath)).resolves.toBe('Machine A');
+      const stateAfterLink = await loadState(machineBLocations);
+      expect(stateAfterLink.lastRemoteUpdate).toBeDefined();
+      await writeState(machineBLocations, { ...stateAfterLink, lastPull: undefined });
+      await expect(machineBService.status()).resolves.toContain('Last pull: never');
+
+      await writeSqlite(machineBDbPath, 'DELETE FROM session;');
+
+      await fs.writeFile(
+        path.join(machineBLocations.configRoot, 'opencode.json'),
+        '{"theme":"local"}\n'
+      );
+
+      await expect(machineBService.pull()).resolves.toContain('Restart opencode to load them');
+      await expect(readSessionTitle(machineBDbPath)).resolves.toBe('Machine A');
+      await expect(machineBService.status()).resolves.toMatch(/Last pull: \d{4}-\d\d-\d\dT/u);
+      const stateAfterPull = await loadState(machineBLocations);
+      expect(stateAfterPull.lastRemoteUpdate).toBe(stateAfterLink.lastRemoteUpdate);
+      await expect(
+        fs.readFile(path.join(machineBLocations.configRoot, 'opencode.json'), 'utf8')
+      ).resolves.toContain('local');
+    });
+  }, 30_000);
+
   it('initializes, links, pushes, and pulls through a local bare remote', async () => {
     await withIsolatedEnvironment(async (root) => {
       const testShell = createTestShell();

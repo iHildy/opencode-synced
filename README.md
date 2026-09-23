@@ -205,6 +205,9 @@ Best-effort session artifact sync via Git paths:
 - `~/.local/share/opencode/storage/session_diff/`
 
 This mode can conflict with concurrent writers.
+`/sync-link` restores the repo's session snapshot on a new machine. On an already linked machine,
+`/sync-pull` reapplies that snapshot even when Git has no new commits, replacing local session
+artifacts. Restart opencode after either command to load the restored sessions.
 
 Large `opencode.db` files and legacy files under `storage/message/` are represented as a small,
 versioned pointer plus 40 MiB parts once they exceed 50 MiB. Parts live in the plugin-owned

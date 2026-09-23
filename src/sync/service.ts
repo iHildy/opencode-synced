@@ -10,7 +10,7 @@ import {
   parseResolutionDecision,
   type ResolutionDecision,
 } from './ai.js';
-import { syncLocalToRepo, syncRepoToLocal } from './apply.js';
+import { syncLocalToRepo, syncRepoToLocal, syncSessionArtifactsRepoToLocal } from './apply.js';
 import { generateCommitMessage } from './commit.js';
 import type { NormalizedSyncConfig } from './config.js';
 import {
@@ -939,6 +939,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
             await acknowledgePrivateRemote(locations, syncedConfig);
           }
           await ensureSensitiveSyncPolicy(ctx, locations, syncedConfig);
+          const sessionPlan = buildSyncPlan(syncedConfig, locations, repoRoot);
+          await syncSessionArtifactsRepoToLocal(sessionPlan);
         }
         if (syncedConfig && isTursoSessionBackend(syncedConfig)) {
           const setup = await runTursoSetup(syncedConfig, { allowLogin: true });
@@ -994,8 +996,22 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const update = await fetchAndFastForward(ctx.$, repoRoot, branch);
         if (!update.updated) {
+          const plan = buildSyncPlan(config, locations, repoRoot);
+          const restoredSessions = await syncSessionArtifactsRepoToLocal(plan);
           const tursoSummary = await runForegroundTursoCycle(config, 'pull-up-to-date');
           ensureTursoSyncLoop(config);
+          if (restoredSessions) {
+            await updateState(locations, { lastPull: new Date().toISOString() });
+            await showToast(
+              ctx.client,
+              'Sessions restored. Restart opencode to load them.',
+              'info'
+            );
+            return [
+              'Remote sessions restored. Restart opencode to load them.',
+              ...(tursoSummary ? [tursoSummary] : []),
+            ].join('\n');
+          }
           if (tursoSummary) {
             return ['Already up to date.', tursoSummary].join('\n');
           }
