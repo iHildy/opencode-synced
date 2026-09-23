@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented here by Release Please.
 
+## [0.11.0](https://github.com/iHildy/opencode-synced/compare/v0.10.1...v0.11.0) (2026-09-23)
+
+
+### Features
+
+* Support OpenCode v2 alongside v1 with explicit dual entrypoints and safe sync tool commands ([#84](https://github.com/iHildy/opencode-synced/pull/84)).
+
+
+### Bug Fixes
+
+* Restore synced Git sessions on link and pull across machines ([#83](https://github.com/iHildy/opencode-synced/pull/83), [#51](https://github.com/iHildy/opencode-synced/issues/51)).
+* Keep v2 sync status read-only and preserve valid MCP server overrides when another server lacks secrets ([#84](https://github.com/iHildy/opencode-synced/pull/84)).
+
+### Security
+
+* Pin the remaining GitHub Actions to immutable commits ([#82](https://github.com/iHildy/opencode-synced/pull/82)).
+
+### Documentation
+
+* Explain v1/v2 requirements, configuration keys, and the Node shell shim ([#84](https://github.com/iHildy/opencode-synced/pull/84)).
+
 ## [0.10.1](https://github.com/iHildy/opencode-synced/compare/v0.10.0...v0.10.1) (2026-08-31)
 
 
