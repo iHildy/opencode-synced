@@ -44,11 +44,18 @@ For opencode v2:
 
 opencode does not auto-update plugins. To update, modify the version number in your config file.
 
+On v2, use the `opencode_sync` tool for sync operations. The `/sync-*` slash
+commands are available on v1 only. V2 cannot display a slash command's direct
+result without placing it in the model's prompt queue, which could trigger
+another operation. For example, ask OpenCode to call `opencode_sync` with
+`{"command":"status"}` to inspect the current state.
+
 ## Configure
 
 ### First machine (create new sync repo)
 
-Run `/sync-init` to create a new sync repo:
+On v1, run `/sync-init` to create a new sync repo. On v2, ask OpenCode to call
+`opencode_sync` with `{"command":"init"}`:
 
 1. Detects your GitHub username
 2. Creates a private repo (`my-opencode-config` by default)
@@ -56,13 +63,15 @@ Run `/sync-init` to create a new sync repo:
 
 ### Additional machines (link to existing repo)
 
-Run `/sync-link` to connect to your existing sync repo:
+On v1, run `/sync-link` to connect to your existing sync repo. On v2, ask
+OpenCode to call `opencode_sync` with `{"command":"link"}`:
 
 1. Searches your GitHub for common sync repo names (prioritizes `my-opencode-config`)
 2. Clones and applies the synced config
 3. **Overwrites local config** with synced content (preserves your local overrides file)
 
-If auto-detection fails, specify the repo name: `/sync-link my-opencode-config`
+If auto-detection fails, specify the repo name with `/sync-link my-opencode-config`
+on v1 or `{"command":"link","repo":"my-opencode-config"}` on v2.
 
 After linking, restart opencode to apply the synced settings.
 

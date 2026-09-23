@@ -27,7 +27,7 @@ vi.mock('@opencode-ai/plugin', () => {
 
 import pluginDefault, { opencodeConfigSync, opencodeSyncedV2 } from './index.js';
 import { resolveSyncLocations } from './sync/paths.js';
-import { parseCommandRepoArg, setupV2 } from './v2.js';
+import { setupV2 } from './v2.js';
 
 const ENV_KEYS = ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME'] as const;
 
@@ -56,7 +56,7 @@ interface MockCtx {
   modelUpdates: [string, string, Record<string, unknown>][];
   transformCallbacks: Record<string, TransformCallback[]>;
   subscribed: boolean;
-  synthetics: { sessionID: string; text: string }[];
+  synthetics: { sessionID: string; text: string; resume?: boolean }[];
   knownAgents: { id: string }[];
   knownProviders: { provider: { id: string } }[];
   ctx: unknown;
@@ -193,7 +193,7 @@ function createMockCtx(): MockCtx {
       text: async () => ({ text: 'Sync opencode config' }),
     },
     session: {
-      synthetic: async (input: { sessionID: string; text: string }) => {
+      synthetic: async (input: { sessionID: string; text: string; resume?: boolean }) => {
         mock.synthetics.push(input);
         return {};
       },
@@ -275,7 +275,7 @@ describe('v2 dual export', () => {
 });
 
 describe('v2 setup', () => {
-  it('registers the sync tool and owned commands, with a status round-trip', async () => {
+  it('exposes status through the tool without registering model-resuming slash commands', async () => {
     await withIsolatedHome(async () => {
       const mock = createMockCtx();
       const cleanup = await setupV2(mock.ctx as never);
@@ -284,12 +284,14 @@ describe('v2 setup', () => {
         expect(mock.toolAdds[0].name).toBe('opencode_sync');
         expect(mock.toolAdds[0].input.required).toEqual(['command']);
 
-        expect(mock.commandAdds.length).toBeGreaterThan(0);
-        expect(mock.commandAdds.map((command) => command.name)).toContain('sync-status');
+        expect(mock.commandAdds).toHaveLength(0);
 
         const result = await mock.toolAdds[0].execute({ command: 'status' });
         expect(typeof result.content).toBe('string');
         expect(result.content).toContain('opencode-synced is not configured');
+        expect(result.content).toContain('opencode_sync with {"command":"init"}');
+        expect(result.content).not.toContain('/sync-init');
+        expect(mock.synthetics).toHaveLength(0);
         expect(mock.subscribed).toBe(true);
       } finally {
         cleanup();
@@ -377,23 +379,6 @@ describe('v2 setup', () => {
     });
   });
 
-  it('posts command results via session.synthetic', async () => {
-    await withIsolatedHome(async () => {
-      const mock = createMockCtx();
-      const cleanup = await setupV2(mock.ctx as never);
-      try {
-        const statusCommand = mock.commandAdds.find((command) => command.name === 'sync-status');
-        expect(statusCommand).toBeDefined();
-        await statusCommand?.execute({ sessionID: 'session-1', prompt: { text: '' } });
-        expect(mock.synthetics).toHaveLength(1);
-        expect(mock.synthetics[0].sessionID).toBe('session-1');
-        expect(mock.synthetics[0].text).toContain('opencode-synced is not configured');
-      } finally {
-        cleanup();
-      }
-    });
-  });
-
   it('cleanup is idempotent and stops background work', async () => {
     await withIsolatedHome(async () => {
       const mock = createMockCtx();
@@ -402,21 +387,5 @@ describe('v2 setup', () => {
       cleanup();
       expect(() => cleanup()).not.toThrow();
     });
-  });
-});
-
-describe('parseCommandRepoArg', () => {
-  it('parses bare repo args and slash-prefixed invocations', () => {
-    expect(parseCommandRepoArg('owner/repo', 'sync-link')).toBe('owner/repo');
-    expect(parseCommandRepoArg('/sync-link owner/repo', 'sync-link')).toBe('owner/repo');
-    expect(parseCommandRepoArg('', 'sync-link')).toBeUndefined();
-    expect(parseCommandRepoArg('/sync-link', 'sync-link')).toBeUndefined();
-  });
-
-  it('handles quotes, $ARGUMENTS, and extra tokens (first token wins)', () => {
-    expect(parseCommandRepoArg('$ARGUMENTS owner/repo', 'sync-link')).toBe('owner/repo');
-    expect(parseCommandRepoArg('/sync-link "owner/repo"', 'sync-link')).toBe('owner/repo');
-    expect(parseCommandRepoArg('owner/repo extra words', 'sync-link')).toBe('owner/repo');
-    expect(parseCommandRepoArg('   ', 'sync-link')).toBeUndefined();
   });
 });

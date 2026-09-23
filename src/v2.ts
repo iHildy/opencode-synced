@@ -5,11 +5,8 @@ import type { PluginInput } from '@opencode-ai/plugin';
 import {
   buildSyncToolInputSchema,
   executeSyncCommand,
-  loadCommands,
-  type ParsedCommand,
   SYNC_TOOL_COMMANDS,
   type SyncToolArgs,
-  type SyncToolCommand,
 } from './shared.js';
 import { createNodeShell } from './shell-node.js';
 import type { AiProvider } from './sync/ai.js';
@@ -22,9 +19,10 @@ import {
   resolveEnvPlaceholders,
 } from './sync/config.js';
 import { resolveSyncLocations } from './sync/paths.js';
-import { createSyncService, type SyncService } from './sync/service.js';
+import { createSyncService } from './sync/service.js';
 
 const PLUGIN_ID = 'opencode-synced';
+const SYNC_COMMAND_NAMES = new Set<string>(SYNC_TOOL_COMMANDS);
 const OVERRIDES_DOC_POINTER =
   'opencode-synced: ignoring unsupported override key (v2 applies only mcp/agent/model/provider via domain transforms; see https://opencode.ai/v2/docs/build/plugins/migrate-v1)';
 
@@ -39,6 +37,13 @@ function v2Warn(message: string): void {
 
 function v2Error(message: string): void {
   console.error(`[opencode-synced] ${message}`);
+}
+
+/** Replace v1 slash-command hints in shared service output with the v2 tool. */
+function v2ToolGuidance(result: string): string {
+  return result.replace(/\/sync-([a-z-]+)/g, (reference, command: string) =>
+    SYNC_COMMAND_NAMES.has(command) ? `opencode_sync with {"command":"${command}"}` : reference
+  );
 }
 
 interface OverrideFailure {
@@ -393,91 +398,7 @@ function createV2AiProvider(ctx: V2Context): AiProvider {
   };
 }
 
-const SYNC_COMMAND_NAMES = new Set<string>(SYNC_TOOL_COMMANDS as readonly string[]);
-
-function toolCommandForName(name: string): SyncToolCommand | null {
-  const suffix = name.startsWith('sync-') ? name.slice('sync-'.length) : name;
-  return SYNC_COMMAND_NAMES.has(suffix) ? (suffix as SyncToolCommand) : null;
-}
-
-/**
- * Parse a bare repo argument from a slash-command invocation
- * (e.g. `/sync-link owner/repo`).
- *
- * V2 slash commands only carry free text (`prompt.text`), not structured tool
- * args, so only a single bare `owner/repo` (or URL) is supported. Quoted
- * multi-word input uses the first token; anything beyond `init`/`link` repo
- * and `sessions-backend` backend is intentionally ignored (documented limit).
- */
-export function parseCommandRepoArg(
-  text: string | undefined,
-  commandName: string
-): string | undefined {
-  if (!text) return undefined;
-  let arg = text.trim();
-  if (!arg) return undefined;
-  if (arg.startsWith('/')) {
-    const firstSpace = arg.indexOf(' ');
-    if (firstSpace === -1) return undefined;
-    arg = arg.slice(firstSpace + 1).trim();
-  } else if (arg.startsWith(commandName)) {
-    arg = arg.slice(commandName.length).trim();
-  }
-  if (arg.startsWith('$ARGUMENTS')) arg = arg.slice('$ARGUMENTS'.length).trim();
-  if (!arg) return undefined;
-  // Strip surrounding quotes, then take the first whitespace-separated token.
-  arg = arg.replace(/^["']+|["']+$/g, '').trim();
-  const firstToken = arg.split(/\s+/)[0];
-  return firstToken || undefined;
-}
-
-async function executeV2Command(
-  service: SyncService,
-  command: ParsedCommand,
-  invocation: { sessionID: string; prompt?: { text?: string }; text?: string }
-): Promise<string> {
-  const toolCommand = toolCommandForName(command.name);
-  if (!toolCommand) return `Unknown sync command: ${command.name}`;
-
-  const rawText = invocation.prompt?.text ?? invocation.text;
-  const repo = parseCommandRepoArg(rawText, command.name);
-
-  switch (toolCommand) {
-    case 'status':
-      return await service.status();
-    case 'init':
-      return await service.init({ repo });
-    case 'link':
-      return await service.link({ repo });
-    case 'pull':
-      return await service.pull();
-    case 'push':
-      return await service.push();
-    case 'resolve':
-      return await service.resolve();
-    case 'secrets-pull':
-      return await service.secretsPull();
-    case 'secrets-push':
-      return await service.secretsPush();
-    case 'secrets-status':
-      return await service.secretsStatus();
-    case 'enable-secrets':
-      return await service.enableSecrets({});
-    case 'sessions-backend': {
-      const backend = repo === 'git' || repo === 'turso' ? repo : undefined;
-      return await service.sessionsBackend({ backend });
-    }
-    case 'sessions-setup-turso':
-      return await service.sessionsSetupTurso({});
-    case 'sessions-migrate-turso':
-      return await service.sessionsMigrateTurso({});
-    case 'sessions-cleanup-git':
-      return await service.sessionsCleanupGit();
-  }
-}
-
 export async function setupV2(ctx: V2Context): Promise<() => void> {
-  const commands = await loadCommands();
   const service = createSyncService({
     client: createV2ClientFacade(),
     $: createNodeShell(),
@@ -499,29 +420,9 @@ export async function setupV2(ctx: V2Context): Promise<() => void> {
         const result = await executeSyncCommand(service, input as unknown as SyncToolArgs);
         // Tool.Result.content accepts string | Content[]; plain string keeps
         // large status outputs readable without manual TextContent wrapping.
-        return { content: result };
+        return { content: v2ToolGuidance(result) };
       },
     });
-  });
-
-  // V2 `CommandDefinition` only carries name/description/execute (no
-  // template/agent/model/subtask like v1 `config.command`). The markdown
-  // template is therefore executed directly via `executeV2Command` + synthetic
-  // reply instead of being registered as a prompt template.
-  await ctx.command.transform((editor) => {
-    for (const command of commands) {
-      editor.add({
-        name: command.name,
-        description: command.frontmatter.description,
-        execute: async ({ sessionID, prompt }) => {
-          const result = await executeV2Command(service, command, {
-            sessionID,
-            prompt: prompt as { text?: string },
-          });
-          await ctx.session.synthetic({ sessionID, text: result });
-        },
-      });
-    }
   });
 
   if (resolved) {
