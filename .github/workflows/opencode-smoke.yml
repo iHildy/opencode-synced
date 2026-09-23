@@ -87,12 +87,26 @@ jobs:
           echo "spec=opencode-synced@$VERSION" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve OpenCode version
+        id: opencode-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OPENCODE_VERSION=$(gh api repos/anomalyco/opencode/releases/latest --jq '.tag_name')
+          if [[ ! "$OPENCODE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "[ERROR] Invalid OpenCode release version: $OPENCODE_VERSION"
+            exit 1
+          fi
+          echo "version=$OPENCODE_VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Install opencode
         env:
-          opencode_install_dir: ${{ runner.temp }}/opencode/bin
+          OPENCODE_VERSION: ${{ steps.opencode-version.outputs.version }}
         run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "${opencode_install_dir}" >> "$GITHUB_PATH"
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-all-errors https://opencode.ai/install |
+            bash -s -- --version "$OPENCODE_VERSION" --no-modify-path
 
       - name: Configure clean opencode home
         env:
