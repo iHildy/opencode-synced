@@ -23,7 +23,7 @@ import {
   stripOverrideKeys,
 } from './mcp-secrets.js';
 import type { ExtraPathPlan, SyncItem, SyncPlan } from './paths.js';
-import { fromPortablePath, normalizePath, toPortablePath } from './paths.js';
+import { foldPortablePath, fromPortablePath, normalizePath, toPortablePath } from './paths.js';
 
 type ExtraPathType = 'file' | 'dir';
 
@@ -597,8 +597,13 @@ async function applyExtraPaths(plan: SyncPlan, extra: ExtraPathPlan): Promise<vo
     const pathApi = plan.platform === 'win32' ? path.win32 : path.posix;
     const localPath = fromPortablePath(entry.sourcePath, plan.configRoot, plan.homeDir, pathApi);
     const normalized = normalizePath(localPath, plan.homeDir, plan.platform);
-    const isAllowed = allowlist.includes(normalized);
-    if (!isAllowed) continue;
+    // Manifest source paths may arrive case-folded (Windows resolves paths
+    // case-insensitively), so match on the folded form and restore to this
+    // machine's own resolved path. Case-colliding allowlists already fail in
+    // buildSyncPlan, so a folded match cannot over-match a legal config.
+    const foldedSource = foldPortablePath(normalized);
+    const targetPath = allowlist.find((allowed) => foldPortablePath(allowed) === foldedSource);
+    if (!targetPath) continue;
 
     const repoPath = resolveManifestRepoPath(plan.repoRoot, entry.repoPath);
     if (!repoPath) continue;
@@ -606,8 +611,8 @@ async function applyExtraPaths(plan: SyncPlan, extra: ExtraPathPlan): Promise<vo
 
     if (!(await pathExists(repoPath))) continue;
 
-    await copyItem(repoPath, localPath, entryType);
-    await applyExtraPathModes(localPath, entry);
+    await copyItem(repoPath, targetPath, entryType);
+    await applyExtraPathModes(targetPath, entry);
   }
 }
 

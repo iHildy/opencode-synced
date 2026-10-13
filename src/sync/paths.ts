@@ -165,13 +165,19 @@ export function normalizePath(
   return resolved;
 }
 
+function resolveExtraRoot(
+  locations: SyncLocations,
+  platform: NodeJS.Platform = process.platform
+): string {
+  return pathApiFor(platform).join(locations.xdg.configDir, 'opencode');
+}
+
 export function resolveExtraPath(
   inputPath: string,
   locations: SyncLocations,
   platform: NodeJS.Platform = process.platform
 ): string {
-  const pathApi = platform === 'win32' ? path.win32 : path.posix;
-  const configRoot = pathApi.join(locations.xdg.configDir, 'opencode');
+  const configRoot = resolveExtraRoot(locations, platform);
   return normalizePath(inputPath, locations.xdg.homeDir, platform, configRoot);
 }
 
@@ -353,11 +359,18 @@ export function buildSyncPlan(
       )
     : extraSecretPaths;
 
+  // Extra-path repo names are derived from the XDG opencode dir (ignoring the
+  // opencode_config_dir override), unlike plan.configRoot used for manifest
+  // sourcePath. Naming and sourcePath roots are intentionally different.
+  const extraNamingRoot = resolveExtraRoot(locations, platform);
+
   const extraSecrets = buildExtraPathPlan(
     filteredExtraSecrets,
     repoExtraDir,
     manifestPath,
-    platform
+    platform,
+    extraNamingRoot,
+    locations.xdg.homeDir
   );
 
   const extraConfigPaths = (config.extraConfigPaths ?? [])
@@ -371,7 +384,9 @@ export function buildSyncPlan(
     extraConfigPaths,
     repoConfigExtraDir,
     configManifestPath,
-    platform
+    platform,
+    extraNamingRoot,
+    locations.xdg.homeDir
   );
 
   return {
@@ -389,18 +404,51 @@ function buildExtraPathPlan(
   sourcePaths: string[],
   repoExtraDir: string,
   manifestPath: string,
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform,
+  extraRoot: string,
+  homeDir: string
 ): ExtraPathPlan {
-  const entries = sourcePaths.map((sourcePath) => ({
-    sourcePath,
-    repoPath: pathApiFor(platform).join(repoExtraDir, encodeExtraPath(sourcePath)),
-  }));
+  const pathApi = pathApiFor(platform);
+  const seenSourcePaths = new Set<string>();
+  const repoPathBySource = new Map<string, string>();
+  const entries: ExtraPathPlan['entries'] = [];
+
+  for (const sourcePath of sourcePaths) {
+    const normalizedSourcePath = normalizePath(sourcePath, homeDir, platform);
+    if (seenSourcePaths.has(normalizedSourcePath)) continue;
+    seenSourcePaths.add(normalizedSourcePath);
+
+    const portable = toPortablePath(normalizedSourcePath, extraRoot, homeDir, pathApi);
+    const repoPath = pathApi.join(repoExtraDir, encodeExtraPath(foldPortablePath(portable)));
+
+    const existingSource = repoPathBySource.get(repoPath);
+    if (existingSource !== undefined) {
+      throw new Error(
+        `Duplicate extra path resolves to the same repository path: ${repoPath} (${existingSource} and ${normalizedSourcePath}). ` +
+          'Names fold case to stay stable across platforms; rename or remove one of these paths.'
+      );
+    }
+    repoPathBySource.set(repoPath, normalizedSourcePath);
+
+    entries.push({ sourcePath, repoPath });
+  }
 
   return {
-    allowlist: sourcePaths,
+    allowlist: entries.map((entry) => entry.sourcePath),
     manifestPath,
     entries,
   };
+}
+
+/**
+ * Fold a path to the canonical cross-platform form: NFC-normalized (macOS
+ * stores decomposed names) and lowercased (Windows resolves paths
+ * case-insensitively). Accepts portable and native paths; folding ignores
+ * separators. Used for repository names and manifest matching so the same
+ * logical file maps to the same repository path on every machine.
+ */
+export function foldPortablePath(inputPath: string): string {
+  return inputPath.normalize('NFC').toLowerCase();
 }
 
 /**

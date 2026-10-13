@@ -408,6 +408,118 @@ describe('buildSyncPlan', () => {
     expect(path.relative('/repo/config/extra', entry?.repoPath ?? '').startsWith('..')).toBe(false);
   });
 
+  it('names extra path repositories independently of the local home directory', () => {
+    const configFor = (home: string) => {
+      const locations = resolveSyncLocations({ HOME: home } as NodeJS.ProcessEnv, 'linux');
+      return buildSyncPlan(
+        normalizeSyncConfig({
+          repo: { owner: 'acme', name: 'config' },
+          includeSecrets: false,
+          extraConfigPaths: ['custom.json'],
+        }),
+        locations,
+        '/repo',
+        'linux'
+      );
+    };
+
+    const alicePlan = configFor('/home/alice');
+    const bobPlan = configFor('/home/bob');
+
+    expect(alicePlan.extraConfigs.entries[0]?.sourcePath).not.toBe(
+      bobPlan.extraConfigs.entries[0]?.sourcePath
+    );
+    expect(alicePlan.extraConfigs.entries[0]?.repoPath).toBe(
+      bobPlan.extraConfigs.entries[0]?.repoPath
+    );
+  });
+
+  it('case-folds Windows and POSIX names for the same config-relative extra path', () => {
+    const winLocations = resolveSyncLocations(
+      { USERPROFILE: 'C:\\Users\\Test' } as NodeJS.ProcessEnv,
+      'win32'
+    );
+    const linuxLocations = resolveSyncLocations(
+      { HOME: '/home/test' } as NodeJS.ProcessEnv,
+      'linux'
+    );
+    const config = normalizeSyncConfig({
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      extraConfigPaths: ['~/.config/opencode/Shared.json'],
+    });
+
+    const winPlan = buildSyncPlan(config, winLocations, '/repo', 'win32');
+    const linuxPlan = buildSyncPlan(config, linuxLocations, '/repo', 'linux');
+
+    // Win32 lowercases absolute paths; POSIX preserves case. Repo names must
+    // case-fold so the same portable path yields the same repository entry
+    // name. Compare entry names so the assertion does not depend on how each
+    // platform spells the repository root.
+    expect(path.win32.basename(winPlan.extraConfigs.entries[0]?.repoPath ?? '')).toBe(
+      path.posix.basename(linuxPlan.extraConfigs.entries[0]?.repoPath ?? '')
+    );
+  });
+
+  it('collapses duplicate extra path declarations to a single entry', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      extraConfigPaths: ['custom.json', 'custom.json'],
+    };
+
+    const plan = buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux');
+
+    expect(plan.extraConfigs.allowlist).toEqual(['/home/test/.config/opencode/custom.json']);
+    expect(plan.extraConfigs.entries).toHaveLength(1);
+  });
+
+  it('rejects case-colliding extra paths that resolve to the same repository path', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      extraConfigPaths: ['Foo.md', 'foo.md'],
+    };
+
+    expect(() => buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux')).toThrow(
+      /Duplicate extra path resolves to the same repository path.*Foo\.md and .*foo\.md/
+    );
+  });
+
+  it('collapses case-sibling extra path declarations on windows without failing', () => {
+    const winLocations = resolveSyncLocations(
+      { USERPROFILE: 'C:\\Users\\Test' } as NodeJS.ProcessEnv,
+      'win32'
+    );
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      extraConfigPaths: ['Foo.md', 'foo.md'],
+    };
+
+    const plan = buildSyncPlan(normalizeSyncConfig(config), winLocations, '/repo', 'win32');
+
+    expect(plan.extraConfigs.entries).toHaveLength(1);
+  });
+
+  it('rejects extra paths that differ only by unicode normalization', () => {
+    const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
+    const locations = resolveSyncLocations(env, 'linux');
+    const config: SyncConfig = {
+      repo: { owner: 'acme', name: 'config' },
+      includeSecrets: false,
+      extraConfigPaths: ['É.md', 'E\u0301.md'],
+    };
+
+    expect(() => buildSyncPlan(normalizeSyncConfig(config), locations, '/repo', 'linux')).toThrow(
+      /Duplicate extra path resolves to the same repository path/
+    );
+  });
+
   it('includes skills directory in default sync items', () => {
     const env = { HOME: '/home/test' } as NodeJS.ProcessEnv;
     const locations = resolveSyncLocations(env, 'linux');

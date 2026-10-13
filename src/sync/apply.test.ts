@@ -713,6 +713,10 @@ describe('portable extra path manifests', () => {
         'linux'
       );
 
+      expect(machineBPlan.extraConfigs.entries[0]?.repoPath).toBe(
+        machineAPlan.extraConfigs.entries[0]?.repoPath
+      );
+
       await syncLocalToRepo(machineAPlan, null);
       const manifest = JSON.parse(
         await fs.readFile(machineAPlan.extraConfigs.manifestPath, 'utf8')
@@ -765,6 +769,49 @@ describe('portable extra path manifests', () => {
 
       await syncRepoToLocal(plan, null);
       await expect(fs.readFile(localPath, 'utf8')).resolves.toBe('legacy-windows-manifest');
+    });
+  });
+
+  it('restores a case-folded manifest entry to the local path spelling on POSIX', async () => {
+    await withTempDir(async (root) => {
+      const homeDir = path.join(root, 'home');
+      const repoRoot = path.join(root, 'repo');
+      const locations = resolveSyncLocations({ HOME: homeDir }, 'linux');
+      const localPath = path.join(locations.configRoot, 'MCPNotes.md');
+      const repoPath = path.join(repoRoot, 'config', 'extra', 'payload');
+      await fs.mkdir(path.dirname(repoPath), { recursive: true });
+      await fs.writeFile(repoPath, 'windows-pushed-extra', 'utf8');
+
+      const plan = buildSyncPlan(
+        normalizeSyncConfig({
+          repo: { owner: 'acme', name: 'config' },
+          includeSecrets: false,
+          extraConfigPaths: [localPath],
+        }),
+        locations,
+        repoRoot,
+        'linux'
+      );
+      await fs.mkdir(path.dirname(plan.extraConfigs.manifestPath), { recursive: true });
+      await fs.writeFile(
+        plan.extraConfigs.manifestPath,
+        JSON.stringify({
+          entries: [
+            {
+              // Windows pushes fold the source path to lowercase.
+              sourcePath: 'mcpnotes.md',
+              repoPath: 'config/extra/payload',
+              type: 'file',
+            },
+          ],
+        }),
+        'utf8'
+      );
+
+      await syncRepoToLocal(plan, null);
+
+      await expect(fs.readFile(localPath, 'utf8')).resolves.toBe('windows-pushed-extra');
+      await expect(fs.access(path.join(locations.configRoot, 'mcpnotes.md'))).rejects.toThrow();
     });
   });
 
