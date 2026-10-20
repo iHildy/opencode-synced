@@ -101,6 +101,8 @@ const quotePosix = (arg: string) => `'${arg.replaceAll("'", `'\\''`)}'`;
  * Differences from Bun `$` to be aware of when debugging service failures:
  * - No shell: `&&`, pipes, redirects, and globs in template text are passed as
  *   literal argv elements, not executed as operators.
+ * - Spawns are hidden (`windowsHide: true`) so console children do not flash
+ *   a conhost window on Windows when the host has no attached console.
  * - No `cwd`/`env` options; inherits the plugin host process env.
  * - `maxBuffer` is 32 MiB; larger git output throws `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`.
  * - Rejection is a `child_process` Error (with `stdout`/`stderr` props), not a Bun ShellError.
@@ -110,12 +112,15 @@ export function createNodeShell(): PluginInput['$'] {
     const argv = buildArgv(strings, values);
     const run = async (): Promise<{ stdout: string; stderr: string }> => {
       try {
-        return await execFileAsync(argv[0], argv.slice(1), { maxBuffer: MAX_BUFFER });
+        return await execFileAsync(argv[0], argv.slice(1), {
+          maxBuffer: MAX_BUFFER,
+          windowsHide: true,
+        });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException)?.code;
         if (code !== 'EINVAL' && code !== 'ENOENT') throw error;
         const line = argv.map(process.platform === 'win32' ? quoteWin32 : quotePosix).join(' ');
-        return await execAsync(line, { maxBuffer: MAX_BUFFER });
+        return await execAsync(line, { maxBuffer: MAX_BUFFER, windowsHide: true });
       }
     };
     const execution = run() as unknown as NodeShellCommand;
