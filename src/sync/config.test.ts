@@ -152,6 +152,12 @@ describe('normalizeSyncConfig', () => {
     expect(normalized.includeAgentsDir).toBe(false);
   });
 
+  it('defaults pullMode to replace and accepts merge', () => {
+    expect(normalizeSyncConfig({}).pullMode).toBe('replace');
+    expect(normalizeSyncConfig({ pullMode: 'merge' }).pullMode).toBe('merge');
+    expect(normalizeSyncConfig({ pullMode: 'bogus' as never }).pullMode).toBe('replace');
+  });
+
   it('defaults extra path lists when omitted', () => {
     const normalized = normalizeSyncConfig({ includeSecrets: true });
     expect(normalized.extraSecretPaths).toEqual([]);

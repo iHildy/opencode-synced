@@ -923,7 +923,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
-        await syncRepoToLocal(plan, overrides);
+        await syncRepoToLocal(plan, overrides, { pullMode: config.pullMode });
 
         await updateState(locations, {
           lastPull: new Date().toISOString(),
@@ -1020,7 +1020,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
-        await syncRepoToLocal(plan, overrides);
+        await syncRepoToLocal(plan, overrides, { pullMode: config.pullMode });
         await runSecretsPullIfConfigured(config);
 
         await updateState(locations, {
@@ -1479,7 +1479,7 @@ async function runStartup(
     log.info('Pulled remote changes', { branch });
     const overrides = await loadOverrides(locations);
     const plan = buildSyncPlan(config, locations, repoRoot);
-    await syncRepoToLocal(plan, overrides);
+    await syncRepoToLocal(plan, overrides, { pullMode: config.pullMode });
     await options.runSecretsPullIfConfigured(config);
     await updateState(locations, {
       lastPull: new Date().toISOString(),

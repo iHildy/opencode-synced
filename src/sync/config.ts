@@ -26,6 +26,14 @@ export interface SecretsBackendConfig {
 
 export type SessionBackendType = 'git' | 'turso';
 
+/**
+ * How `pull` applies synced directories to the local machine.
+ * - `replace` (default): each synced directory is replaced by the repo copy, so local-only files
+ *   inside it are deleted.
+ * - `merge`: repo files are copied over local ones and local-only files are left untouched.
+ */
+export type PullMode = 'replace' | 'merge';
+
 export interface TursoSessionBackendSettings {
   database?: string;
   url?: string;
@@ -61,6 +69,7 @@ export interface SyncConfig {
   includeModelFavorites?: boolean;
   includeOpencodeSkills?: boolean;
   includeAgentsDir?: boolean;
+  pullMode?: PullMode;
   secretsBackend?: SecretsBackendConfig;
   extraSecretPaths?: string[];
   extraConfigPaths?: string[];
@@ -75,6 +84,7 @@ export interface NormalizedSyncConfig extends SyncConfig {
   includeModelFavorites: boolean;
   includeOpencodeSkills: boolean;
   includeAgentsDir: boolean;
+  pullMode: PullMode;
   secretsBackend?: SecretsBackendConfig;
   extraSecretPaths: string[];
   extraConfigPaths: string[];
@@ -188,6 +198,7 @@ export function normalizeSyncConfig(config: SyncConfig): NormalizedSyncConfig {
     includeModelFavorites,
     includeOpencodeSkills,
     includeAgentsDir,
+    pullMode: config.pullMode === 'merge' ? 'merge' : 'replace',
     secretsBackend: normalizeSecretsBackend(config.secretsBackend),
     extraSecretPaths: Array.isArray(config.extraSecretPaths) ? config.extraSecretPaths : [],
     extraConfigPaths: Array.isArray(config.extraConfigPaths) ? config.extraConfigPaths : [],
