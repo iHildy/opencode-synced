@@ -82,6 +82,10 @@ export const opencodeConfigSync: Plugin = async (ctx) => {
         .describe(
           'Acknowledge that an explicit non-GitHub remote is private (only after user confirmation)'
         ),
+      dryRun: tool.schema
+        .boolean()
+        .optional()
+        .describe('For pull and push: list what would change without changing anything'),
       setupTurso: tool.schema
         .boolean()
         .optional()

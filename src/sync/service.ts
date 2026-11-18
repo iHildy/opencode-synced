@@ -28,6 +28,7 @@ import { SyncCommandError, SyncConfigMissingError } from './errors.js';
 import type { SyncLockInfo } from './lock.js';
 import { withSyncLock } from './lock.js';
 import { buildSyncPlan, resolveRepoRoot, resolveSyncLocations } from './paths.js';
+import { previewLocalChanges, summarizeChanges } from './preview.js';
 import {
   commitAll,
   ensureRepoCloned,
@@ -36,10 +37,12 @@ import {
   findSyncRepo,
   getAuthenticatedUser,
   getRepoStatus,
+  getStatusLines,
   hasAnyRemoteBranches,
   hasLocalChanges,
   hasRemoteBranch,
   inspectOversizedUnpushedHistory,
+  inspectRemoteDrift,
   isExplicitGitRemote,
   isGitHubRepoConfig,
   isRepoCloned,
@@ -99,14 +102,19 @@ interface LinkOptions {
   acknowledgePrivateRemote?: boolean;
 }
 
+export interface DryRunOptions {
+  /** Report what would change without applying or committing anything. */
+  dryRun?: boolean;
+}
+
 export interface SyncService {
   startupSync: () => Promise<void>;
   handleEvent: (_event: unknown) => Promise<void>;
   status: () => Promise<string>;
   init: (_options: InitOptions) => Promise<string>;
   link: (_options: LinkOptions) => Promise<string>;
-  pull: () => Promise<string>;
-  push: () => Promise<string>;
+  pull: (_options?: DryRunOptions) => Promise<string>;
+  push: (_options?: DryRunOptions) => Promise<string>;
   secretsPull: () => Promise<string>;
   secretsPush: () => Promise<string>;
   secretsStatus: () => Promise<string>;
@@ -723,6 +731,20 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           changesLabel = `${repoStatus.length} pending`;
         }
       }
+      let localChangesLabel = 'unknown (repo not cloned)';
+      let remoteLabel = 'unknown (repo not cloned)';
+      if (cloned) {
+        const driftLines = await describeDrift({
+          $: ctx.$,
+          config,
+          locations,
+          repoRoot,
+          branch,
+          clean: repoStatus.length === 0,
+        });
+        localChangesLabel = driftLines.local;
+        remoteLabel = driftLines.remote;
+      }
       const statusLines = [
         `Repo: ${repoIdentifier}`,
         `Branch: ${branch}`,
@@ -740,6 +762,8 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         `Last pull: ${lastPull}`,
         `Last push: ${lastPush}`,
         `Working tree: ${changesLabel}`,
+        `Local changes: ${localChangesLabel}`,
+        `Remote: ${remoteLabel}`,
       ];
       if (tursoStatusLine) {
         statusLines.push(tursoStatusLine);
@@ -977,7 +1001,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         await showToast(ctx.client, 'Config synced. Restart opencode to apply.', 'info');
         return lines.join('\n');
       }),
-    pull: () =>
+    pull: (options?: DryRunOptions) =>
       runExclusive(async () => {
         const config = await getConfigOrThrow(locations);
         const repoRoot = resolveRepoRoot(config, locations);
@@ -994,6 +1018,11 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           );
         }
 
+        if (options?.dryRun) {
+          return await describePullDryRun(ctx.$, repoRoot, branch);
+        }
+
+        const headBeforePull = await readHead(ctx.$, repoRoot);
         const update = await fetchAndFastForward(ctx.$, repoRoot, branch);
         if (!update.updated) {
           const plan = buildSyncPlan(config, locations, repoRoot);
@@ -1032,15 +1061,14 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         ensureTursoSyncLoop(config);
 
         await showToast(ctx.client, 'Config updated. Restart opencode to apply.', 'info');
-        if (tursoSummary) {
-          return [
-            'Remote config applied. Restart opencode to use new settings.',
-            tursoSummary,
-          ].join('\n');
-        }
-        return 'Remote config applied. Restart opencode to use new settings.';
+        const appliedChanges = await describeAppliedChanges(ctx.$, repoRoot, headBeforePull);
+        return [
+          'Remote config applied. Restart opencode to use new settings.',
+          ...appliedChanges,
+          ...(tursoSummary ? [tursoSummary] : []),
+        ].join('\n');
       }),
-    push: () =>
+    push: (options?: DryRunOptions) =>
       runExclusive(async () => {
         const config = await getConfigOrThrow(locations);
         const repoRoot = resolveRepoRoot(config, locations);
@@ -1057,6 +1085,17 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         }
 
         const overrides = await loadOverrides(locations);
+        if (options?.dryRun) {
+          return await describePushDryRun({
+            $: ctx.$,
+            config,
+            locations,
+            repoRoot,
+            branch,
+            overrides,
+          });
+        }
+
         const plan = buildSyncPlan(config, locations, repoRoot);
         await syncLocalToRepo(plan, overrides, {
           overridesPath: locations.overridesPath,
@@ -1092,6 +1131,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           }
         }
 
+        const pushedChanges = summarizeChanges(await getStatusLines(ctx.$, repoRoot));
         const message = await generateCommitMessage(
           { client: ctx.client, $: ctx.$, ai: ctx.ai },
           repoRoot
@@ -1115,16 +1155,20 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         ensureTursoSyncLoop(config);
 
         if (secretsFailure) {
-          const lines = [`Pushed changes: ${message}. Secrets push failed: ${secretsFailure}`];
+          const lines = [
+            `Pushed changes: ${message}. Secrets push failed: ${secretsFailure}`,
+            ...pushedChanges,
+          ];
           if (tursoSummary) {
             lines.push(tursoSummary);
           }
           return lines.join('\n');
         }
-        if (tursoSummary) {
-          return [`Pushed changes: ${message}`, tursoSummary].join('\n');
-        }
-        return `Pushed changes: ${message}`;
+        return [
+          `Pushed changes: ${message}`,
+          ...pushedChanges,
+          ...(tursoSummary ? [tursoSummary] : []),
+        ].join('\n');
       }),
     secretsPull: () =>
       runExclusive(() =>
@@ -1417,6 +1461,107 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
       stopTursoSyncLoop();
     },
   };
+}
+
+async function readHead($: Shell, repoRoot: string): Promise<string | null> {
+  try {
+    return (await $`git -C ${repoRoot} rev-parse HEAD`.quiet().text()).trim();
+  } catch {
+    return null;
+  }
+}
+
+async function describeAppliedChanges(
+  $: Shell,
+  repoRoot: string,
+  headBefore: string | null
+): Promise<string[]> {
+  if (!headBefore) return [];
+  try {
+    const output = await $`git -C ${repoRoot} diff --name-status ${headBefore} HEAD`.quiet().text();
+    return summarizeChanges(output.split('\n'));
+  } catch {
+    return [];
+  }
+}
+
+async function describePullDryRun($: Shell, repoRoot: string, branch: string): Promise<string> {
+  const drift = await inspectRemoteDrift($, repoRoot, branch);
+  if (!drift) return 'Dry run: could not reach the remote, nothing was changed.';
+  if (drift.behind === 0) {
+    return 'Dry run: already up to date, a pull would change nothing.';
+  }
+  const commits = drift.behind === 1 ? '1 commit' : `${drift.behind} commits`;
+  return [
+    `Dry run: a pull would apply ${commits} from the remote. Nothing was changed.`,
+    'Paths below are repository paths.',
+    ...summarizeChanges(drift.changes),
+  ].join('\n');
+}
+
+async function describePushDryRun(input: {
+  $: Shell;
+  config: NormalizedSyncConfig;
+  locations: ReturnType<typeof resolveSyncLocations>;
+  repoRoot: string;
+  branch: string;
+  overrides: Record<string, unknown> | null;
+}): Promise<string> {
+  const { $, config, locations, repoRoot, branch, overrides } = input;
+  const changes = await previewLocalChanges($, config, locations, repoRoot, overrides);
+  if (!changes) return 'Dry run: could not compute local changes, nothing was changed.';
+
+  const drift = await inspectRemoteDrift($, repoRoot, branch);
+  const lines =
+    changes.length === 0
+      ? ['Dry run: a push would change nothing in the config repo.']
+      : [
+          'Dry run: a push would commit these changes. Nothing was changed.',
+          ...summarizeChanges(changes),
+        ];
+  if (drift && drift.behind > 0) {
+    lines.push(
+      `Warning: the remote has ${drift.behind} newer commit(s). Pull first, or a push will be rejected.`
+    );
+  }
+  lines.push('Session and secret files are not compared.');
+  return lines.join('\n');
+}
+
+async function describeDrift(input: {
+  $: Shell;
+  config: NormalizedSyncConfig;
+  locations: ReturnType<typeof resolveSyncLocations>;
+  repoRoot: string;
+  branch: string;
+  clean: boolean;
+}): Promise<{ local: string; remote: string }> {
+  const { $, config, locations, repoRoot, branch, clean } = input;
+  let local = 'unknown (sync repo has pending changes)';
+  if (clean) {
+    const overrides = await loadOverrides(locations);
+    const changes = await previewLocalChanges($, config, locations, repoRoot, overrides);
+    if (!changes) {
+      local = 'unknown (could not compare)';
+    } else if (changes.length === 0) {
+      local = 'none (local config matches the repo)';
+    } else {
+      local = `${changes.length} file(s) differ from the repo, use push with dryRun to list them`;
+    }
+  }
+
+  const drift = await inspectRemoteDrift($, repoRoot, branch);
+  let remote = 'unreachable';
+  if (drift) {
+    if (drift.behind > 0) {
+      remote = `${drift.behind} commit(s) not yet pulled, use pull with dryRun to list them`;
+    } else if (drift.ahead > 0) {
+      remote = `${drift.ahead} local commit(s) not yet pushed`;
+    } else {
+      remote = 'up to date';
+    }
+  }
+  return { local, remote };
 }
 
 function assertValidSecretsBackend(config: NormalizedSyncConfig): void {

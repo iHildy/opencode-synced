@@ -302,6 +302,23 @@ Env var naming rules:
 | `/sync-sessions-cleanup-git` | Remove deprecated Git session artifacts after migration |
 | `/sync-resolve` | Auto-resolve uncommitted changes using AI |
 
+### Drift and dry runs
+
+`status` also compares this machine with the repo:
+
+- `Local changes:` how many synced files differ from what the repo holds, so unpushed edits show up
+  even though `Working tree` (the state of the plugin's own clone) says `clean`.
+- `Remote:` whether the remote has commits you have not pulled, or you have commits not pushed.
+
+`pull` and `push` accept `dryRun: true` (for example `{"command":"push","dryRun":true}` on opencode
+v2) to list what would change without changing anything. A push dry run stages your local config
+into a throwaway clone, so it uses the same logic as a real push and never touches the sync repo, your
+config or the overrides file. Real runs now end with the same per-file summary, for example
+`2 files: 1 updated, 1 added`.
+
+Dry runs and `Local changes` cover `config/` and `state/` only; session data and secret files are never
+compared or printed.
+
 <details>
 <summary>Manual sync (without slash commands)</summary>
 
