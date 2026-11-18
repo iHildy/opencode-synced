@@ -726,6 +726,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
       const statusLines = [
         `Repo: ${repoIdentifier}`,
         `Branch: ${branch}`,
+        `Mode: ${config.mode}`,
         `Secrets: ${includeSecrets}`,
         `Secrets backend: ${secretsBackend}`,
         `MCP secrets: ${includeMcpSecrets}`,
@@ -1043,6 +1044,9 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
     push: () =>
       runExclusive(async () => {
         const config = await getConfigOrThrow(locations);
+        if (config.mode === 'pull-only') {
+          return PULL_ONLY_MESSAGE;
+        }
         const repoRoot = resolveRepoRoot(config, locations);
         await ensureRepoCloned(ctx.$, config, repoRoot);
         await ensureSensitiveSyncPolicy(ctx, locations, config);
@@ -1135,15 +1139,19 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         })
       ),
     secretsPush: () =>
-      runExclusive(() =>
-        runSecretsCommand(async (backend) => {
+      runExclusive(async () => {
+        const config = await loadSyncConfig(locations);
+        if (config?.mode === 'pull-only') {
+          return PULL_ONLY_MESSAGE;
+        }
+        return await runSecretsCommand(async (backend) => {
           const result = await pushSecretsWithBackend(backend);
           if (result === 'skipped') {
             return 'Secrets unchanged; skipping 1Password push.';
           }
           return 'Pushed secrets to 1Password.';
-        })
-      ),
+        });
+      }),
     secretsStatus: () =>
       runExclusive(() =>
         runSecretsCommand(async (backend) => {
@@ -1419,6 +1427,9 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
   };
 }
 
+const PULL_ONLY_MESSAGE =
+  'Skipped: opencode-synced is in pull-only mode (set "mode": "sync" in opencode-synced.jsonc to push).';
+
 function assertValidSecretsBackend(config: NormalizedSyncConfig): void {
   const resolution = resolveSecretsBackendConfig(config);
   if (resolution.state === 'invalid') {
@@ -1486,6 +1497,11 @@ async function runStartup(
       lastRemoteUpdate: new Date().toISOString(),
     });
     await showToast(ctx.client, 'Config updated. Restart opencode to apply.', 'info');
+    return;
+  }
+
+  if (config.mode === 'pull-only') {
+    log.debug('Pull-only mode, not pushing local changes');
     return;
   }
 

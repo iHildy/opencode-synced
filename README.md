@@ -135,6 +135,7 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
   "includeModelFavorites": true,
   "includeOpencodeSkills": true,
   "includeAgentsDir": true,
+  "mode": "sync",
   "extraSecretPaths": [],
   "extraConfigPaths": [],
 }
@@ -154,6 +155,19 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 `~/.agents/` is enabled by default and may contain instructions or skills you consider private.
 Review it before syncing, keep the sync repository private when needed, or set
 `"includeAgentsDir": false` to opt out.
+
+### Pull-only mode
+
+Set `"mode": "pull-only"` on machines that should only receive config, such as a headless
+server, a shared machine or an appliance. In this mode:
+
+- startup and `/sync-pull` still fetch and apply remote changes;
+- startup never stages or pushes this machine's config, and `push` and `secrets-push` return a
+  "skipped" message instead of committing;
+- `status` shows `Mode: pull-only`.
+
+The default is `"mode": "sync"`. A read-only deploy key on the remote is a good complement, since it
+makes an accidental push impossible at the Git level as well.
 
 Disable default directory sync by setting:
 - `"includeOpencodeSkills": false` to skip `~/.config/opencode/skills/`

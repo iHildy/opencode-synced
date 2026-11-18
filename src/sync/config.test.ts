@@ -152,6 +152,12 @@ describe('normalizeSyncConfig', () => {
     expect(normalized.includeAgentsDir).toBe(false);
   });
 
+  it('defaults mode to sync and accepts pull-only', () => {
+    expect(normalizeSyncConfig({}).mode).toBe('sync');
+    expect(normalizeSyncConfig({ mode: 'pull-only' }).mode).toBe('pull-only');
+    expect(normalizeSyncConfig({ mode: 'bogus' as never }).mode).toBe('sync');
+  });
+
   it('defaults extra path lists when omitted', () => {
     const normalized = normalizeSyncConfig({ includeSecrets: true });
     expect(normalized.extraSecretPaths).toEqual([]);
