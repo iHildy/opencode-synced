@@ -923,7 +923,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
-        await syncRepoToLocal(plan, overrides);
+        await syncRepoToLocal(plan, overrides, { modelRemap: config.modelRemap });
 
         await updateState(locations, {
           lastPull: new Date().toISOString(),
@@ -1020,7 +1020,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
-        await syncRepoToLocal(plan, overrides);
+        await syncRepoToLocal(plan, overrides, { modelRemap: config.modelRemap });
         await runSecretsPullIfConfigured(config);
 
         await updateState(locations, {
@@ -1061,6 +1061,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         await syncLocalToRepo(plan, overrides, {
           overridesPath: locations.overridesPath,
           allowMcpSecrets: canCommitMcpSecrets(config),
+          modelRemap: config.modelRemap,
         });
         await assertNoOversizedUnpushedHistory(ctx.$, repoRoot, branch);
 
@@ -1479,7 +1480,7 @@ async function runStartup(
     log.info('Pulled remote changes', { branch });
     const overrides = await loadOverrides(locations);
     const plan = buildSyncPlan(config, locations, repoRoot);
-    await syncRepoToLocal(plan, overrides);
+    await syncRepoToLocal(plan, overrides, { modelRemap: config.modelRemap });
     await options.runSecretsPullIfConfigured(config);
     await updateState(locations, {
       lastPull: new Date().toISOString(),
@@ -1494,6 +1495,7 @@ async function runStartup(
   await syncLocalToRepo(plan, overrides, {
     overridesPath: locations.overridesPath,
     allowMcpSecrets: canCommitMcpSecrets(config),
+    modelRemap: config.modelRemap,
   });
   await assertNoOversizedUnpushedHistory(ctx.$, repoRoot, branch);
   const changes = await hasLocalChanges(ctx.$, repoRoot);

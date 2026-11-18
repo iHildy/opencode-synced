@@ -152,6 +152,16 @@ describe('normalizeSyncConfig', () => {
     expect(normalized.includeAgentsDir).toBe(false);
   });
 
+  it('normalizes modelRemap and drops invalid entries', () => {
+    expect(normalizeSyncConfig({}).modelRemap).toEqual({});
+    expect(
+      normalizeSyncConfig({
+        modelRemap: { 'a/b': 'c/d', same: 'same', empty: '', num: 1 as never },
+      }).modelRemap
+    ).toEqual({ 'a/b': 'c/d' });
+    expect(normalizeSyncConfig({ modelRemap: 'nope' as never }).modelRemap).toEqual({});
+  });
+
   it('defaults extra path lists when omitted', () => {
     const normalized = normalizeSyncConfig({ includeSecrets: true });
     expect(normalized.extraSecretPaths).toEqual([]);
