@@ -26,6 +26,8 @@ export interface SecretsBackendConfig {
 
 export type SessionBackendType = 'git' | 'turso';
 
+export type ModelRemapConfig = Record<string, string>;
+
 export interface TursoSessionBackendSettings {
   database?: string;
   url?: string;
@@ -61,6 +63,7 @@ export interface SyncConfig {
   includeModelFavorites?: boolean;
   includeOpencodeSkills?: boolean;
   includeAgentsDir?: boolean;
+  modelRemap?: ModelRemapConfig;
   secretsBackend?: SecretsBackendConfig;
   extraSecretPaths?: string[];
   extraConfigPaths?: string[];
@@ -75,6 +78,7 @@ export interface NormalizedSyncConfig extends SyncConfig {
   includeModelFavorites: boolean;
   includeOpencodeSkills: boolean;
   includeAgentsDir: boolean;
+  modelRemap: ModelRemapConfig;
   secretsBackend?: SecretsBackendConfig;
   extraSecretPaths: string[];
   extraConfigPaths: string[];
@@ -168,6 +172,21 @@ export function normalizeSessionBackend(
   };
 }
 
+export function normalizeModelRemap(input: unknown): ModelRemapConfig {
+  if (!isPlainObject(input)) return {};
+  const result: ModelRemapConfig = {};
+  for (const [from, to] of Object.entries(input)) {
+    if (typeof to !== 'string' || !from.trim() || !to.trim() || from === to) continue;
+    Object.defineProperty(result, from, {
+      value: to,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return result;
+}
+
 export function isTursoSessionBackend(config: SyncConfig | NormalizedSyncConfig): boolean {
   if (!config.includeSessions) return false;
   const normalized = normalizeSessionBackend(config.sessionBackend);
@@ -188,6 +207,7 @@ export function normalizeSyncConfig(config: SyncConfig): NormalizedSyncConfig {
     includeModelFavorites,
     includeOpencodeSkills,
     includeAgentsDir,
+    modelRemap: normalizeModelRemap(config.modelRemap),
     secretsBackend: normalizeSecretsBackend(config.secretsBackend),
     extraSecretPaths: Array.isArray(config.extraSecretPaths) ? config.extraSecretPaths : [],
     extraConfigPaths: Array.isArray(config.extraConfigPaths) ? config.extraConfigPaths : [],

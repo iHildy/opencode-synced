@@ -902,3 +902,86 @@ describe('MCP secret scrub round trip', () => {
     });
   });
 });
+
+describe('model remap on pull and push', () => {
+  const REMAP = { 'claude-agent/opus': 'vercel/anthropic/claude-opus-5.5' };
+
+  async function seed(root: string): Promise<{
+    plan: SyncPlan;
+    repoAgent: string;
+    localAgent: string;
+    repoConfig: string;
+    localConfig: string;
+  }> {
+    const repoRoot = path.join(root, 'repo');
+    const homeDir = path.join(root, 'home');
+    const configRoot = path.join(homeDir, '.config', 'opencode');
+    const repoAgent = path.join(repoRoot, 'config', 'agents', 'lead.md');
+    const localAgent = path.join(configRoot, 'agents', 'lead.md');
+    const repoConfig = path.join(repoRoot, 'config', 'opencode.json');
+    const localConfig = path.join(configRoot, 'opencode.json');
+    await fs.mkdir(path.dirname(repoAgent), { recursive: true });
+    await fs.writeFile(
+      repoAgent,
+      '---\nmodel: claude-agent/opus\nmode: primary\n---\nPrompt\n',
+      'utf8'
+    );
+    await fs.writeFile(repoConfig, '{"agent":{"lead":{"model":"claude-agent/opus"}}}\n', 'utf8');
+    const plan = createPlan(repoRoot, homeDir, [
+      {
+        localPath: localConfig,
+        repoPath: repoConfig,
+        type: 'file',
+        isSecret: false,
+        isConfigFile: true,
+      },
+      {
+        localPath: path.dirname(localAgent),
+        repoPath: path.dirname(repoAgent),
+        type: 'dir',
+        isSecret: false,
+        isConfigFile: false,
+      },
+    ]);
+    return { plan, repoAgent, localAgent, repoConfig, localConfig };
+  }
+
+  it('applies the remap to agent files and opencode.json on pull', async () => {
+    await withTempDir(async (root) => {
+      const { plan, localAgent, localConfig } = await seed(root);
+
+      await syncRepoToLocal(plan, null, { modelRemap: REMAP });
+
+      expect(await fs.readFile(localAgent, 'utf8')).toContain(
+        'model: vercel/anthropic/claude-opus-5.5'
+      );
+      expect(await fs.readFile(localConfig, 'utf8')).toContain('vercel/anthropic/claude-opus-5.5');
+    });
+  });
+
+  it('writes canonical models back to the repo on push, leaving no diff after a pull', async () => {
+    await withTempDir(async (root) => {
+      const { plan, repoAgent, repoConfig } = await seed(root);
+      const repoAgentBefore = await fs.readFile(repoAgent, 'utf8');
+      const repoConfigBefore = await fs.readFile(repoConfig, 'utf8');
+
+      await syncRepoToLocal(plan, null, { modelRemap: REMAP });
+      await syncLocalToRepo(plan, null, { modelRemap: REMAP });
+
+      expect(await fs.readFile(repoAgent, 'utf8')).toBe(repoAgentBefore);
+      expect(parseJsonc(await fs.readFile(repoConfig, 'utf8'))).toEqual(
+        parseJsonc(repoConfigBefore)
+      );
+    });
+  });
+
+  it('does nothing when no remap is configured', async () => {
+    await withTempDir(async (root) => {
+      const { plan, localAgent } = await seed(root);
+
+      await syncRepoToLocal(plan, null);
+
+      expect(await fs.readFile(localAgent, 'utf8')).toContain('model: claude-agent/opus');
+    });
+  });
+});

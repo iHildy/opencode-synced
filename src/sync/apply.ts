@@ -22,6 +22,14 @@ import {
   mergeOverrides,
   stripOverrideKeys,
 } from './mcp-secrets.js';
+import {
+  invertModelRemap,
+  isEmptyRemap,
+  MODEL_REMAP_DIR_NAMES,
+  type ModelRemap,
+  remapConfigModels,
+  remapMarkdownDirectory,
+} from './model-remap.js';
 import type { ExtraPathPlan, SyncItem, SyncPlan } from './paths.js';
 import { fromPortablePath, normalizePath, toPortablePath } from './paths.js';
 
@@ -51,7 +59,7 @@ interface ExtraPathManifest {
 export async function syncRepoToLocal(
   plan: SyncPlan,
   overrides: Record<string, unknown> | null,
-  options: { chunkOptions?: ChunkOptions } = {}
+  options: { chunkOptions?: ChunkOptions; modelRemap?: ModelRemap } = {}
 ): Promise<void> {
   for (const item of plan.items) {
     if (item.chunkLargeFiles) {
@@ -63,6 +71,10 @@ export async function syncRepoToLocal(
 
   await applyExtraPaths(plan, plan.extraConfigs);
   await applyExtraPaths(plan, plan.extraSecrets);
+
+  if (!isEmptyRemap(options.modelRemap)) {
+    await applyModelRemapToLocal(plan, options.modelRemap as ModelRemap);
+  }
 
   if (overrides && Object.keys(overrides).length > 0) {
     await applyOverridesToLocalConfig(plan, overrides);
@@ -93,8 +105,11 @@ export async function syncLocalToRepo(
     overridesPath?: string;
     allowMcpSecrets?: boolean;
     chunkOptions?: ChunkOptions;
+    modelRemap?: ModelRemap;
   } = {}
 ): Promise<void> {
+  const inverseRemap = invertModelRemap(options.modelRemap);
+  const hasInverseRemap = !isEmptyRemap(inverseRemap);
   const configItems = plan.items.filter((item) => item.isConfigFile);
   const sanitizedConfigs = new Map<string, Record<string, unknown>>();
   let secretOverrides: Record<string, unknown> = {};
@@ -104,10 +119,12 @@ export async function syncLocalToRepo(
     if (!(await pathExists(item.localPath))) continue;
 
     const content = await fs.readFile(item.localPath, 'utf8');
-    const parsed = parseJsonc<Record<string, unknown>>(content);
+    const parsed = remapConfigModels(parseJsonc<Record<string, unknown>>(content), inverseRemap);
     const { sanitizedConfig, secretOverrides: extracted } = extractMcpSecrets(parsed);
     if (!allowMcpSecrets) {
       sanitizedConfigs.set(item.localPath, sanitizedConfig);
+    } else if (hasInverseRemap) {
+      sanitizedConfigs.set(item.localPath, parsed);
     }
     if (hasOverrides(extracted)) {
       secretOverrides = mergeOverrides(secretOverrides, extracted);
@@ -144,6 +161,9 @@ export async function syncLocalToRepo(
     }
 
     await copyItem(item.localPath, item.repoPath, item.type, !item.preserveWhenMissing);
+    if (hasInverseRemap && isModelRemapDirectory(item)) {
+      await remapMarkdownDirectory(item.repoPath, inverseRemap);
+    }
   }
 
   await writeExtraPathManifest(plan, plan.extraConfigs);
@@ -498,6 +518,30 @@ async function readRepoConfig(
   }
   const content = await fs.readFile(item.repoPath, 'utf8');
   return parseJsonc<Record<string, unknown>>(content);
+}
+
+function isModelRemapDirectory(item: SyncItem): boolean {
+  if (item.type !== 'dir' || item.isSecret) return false;
+  return MODEL_REMAP_DIR_NAMES.has(path.basename(item.localPath));
+}
+
+async function applyModelRemapToLocal(plan: SyncPlan, remap: ModelRemap): Promise<void> {
+  for (const item of plan.items) {
+    if (isModelRemapDirectory(item)) {
+      await remapMarkdownDirectory(item.localPath, remap);
+      continue;
+    }
+    if (!item.isConfigFile || !(await pathExists(item.localPath))) continue;
+
+    const parsed = parseJsonc<Record<string, unknown>>(await fs.readFile(item.localPath, 'utf8'));
+    const remapped = remapConfigModels(parsed, remap);
+    if (isDeepEqual(parsed, remapped)) continue;
+    const stat = await fs.stat(item.localPath);
+    await writeJsonFile(item.localPath, remapped, {
+      jsonc: item.localPath.endsWith('.jsonc'),
+      mode: stat.mode & 0o777,
+    });
+  }
 }
 
 async function applyOverridesToLocalConfig(

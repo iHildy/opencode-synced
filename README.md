@@ -135,6 +135,7 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
   "includeModelFavorites": true,
   "includeOpencodeSkills": true,
   "includeAgentsDir": true,
+  "modelRemap": {},
   "extraSecretPaths": [],
   "extraConfigPaths": [],
 }
@@ -154,6 +155,27 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 `~/.agents/` is enabled by default and may contain instructions or skills you consider private.
 Review it before syncing, keep the sync repository private when needed, or set
 `"includeAgentsDir": false` to opt out.
+
+### Model remap
+
+Agent and command files often pin a `model:` that only exists on some machines. Set `modelRemap`
+in `opencode-synced.jsonc` to translate those values per machine:
+
+```jsonc
+{
+  "modelRemap": {
+    "some-provider/some-model": "other-provider/other-model"
+  }
+}
+```
+
+- On pull, the `model:` frontmatter key of markdown files in `agent/`, `agents/`, `command/`,
+  `commands/`, `mode/` and `modes/`, and the `model` and `small_model` values in
+  `opencode.json(c)`, are rewritten to the local value.
+- On push, the mapping is reversed, so the repository keeps the canonical value. If two canonical
+  values map to the same local value, that local value is left as is on push.
+- A `#variant` suffix is preserved when only the base model is mapped.
+- Only exact model strings are replaced. Prompt bodies and other keys are never touched.
 
 Disable default directory sync by setting:
 - `"includeOpencodeSkills": false` to skip `~/.config/opencode/skills/`
