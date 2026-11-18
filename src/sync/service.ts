@@ -34,6 +34,7 @@ import {
   ensureRepoPrivate,
   fetchAndFastForward,
   findSyncRepo,
+  getAheadBehind,
   getAuthenticatedUser,
   getRepoStatus,
   hasAnyRemoteBranches,
@@ -137,6 +138,9 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
     process.env.OPENCODE_SYNC_E2E_DISABLE_AUTO_REPO_DISCOVERY === '1' || strictLinkRepo !== null;
   let tursoSyncTimer: ReturnType<typeof setInterval> | null = null;
   let tursoSyncIntervalSec = 15;
+  let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
+  let autoSyncIntervalSec = 0;
+  const autoSyncState: AutoSyncState = {};
   const activeSessionIds = new Set<string>();
   const pendingTursoSyncReasons = new Set<string>();
   let tursoIdleFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -305,6 +309,50 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
       clearTimeout(tursoIdleFlushTimer);
       tursoIdleFlushTimer = null;
     }
+  };
+
+  const stopAutoSyncLoop = (): void => {
+    if (!autoSyncTimer) return;
+    clearInterval(autoSyncTimer);
+    autoSyncTimer = null;
+    autoSyncIntervalSec = 0;
+  };
+
+  const runAutoSyncTick = async (): Promise<void> => {
+    let latest: NormalizedSyncConfig | null = null;
+    try {
+      latest = await loadSyncConfig(locations);
+    } catch (error) {
+      log.warn('Auto sync could not load config', { error: formatError(error) });
+      return;
+    }
+    if (!latest?.autoSync.enabled) {
+      stopAutoSyncLoop();
+      return;
+    }
+    try {
+      assertValidSecretsBackend(latest);
+      await runAutoSyncCycle(ctx, locations, latest, log, autoSyncState, {
+        ensureAuthFilesNotTracked,
+        runSecretsPullIfConfigured,
+      });
+    } catch (error) {
+      log.warn('Auto sync cycle failed', { error: formatError(error) });
+    }
+  };
+
+  const ensureAutoSyncLoop = (config: NormalizedSyncConfig): void => {
+    if (!config.autoSync.enabled) {
+      stopAutoSyncLoop();
+      return;
+    }
+    if (autoSyncTimer && autoSyncIntervalSec === config.autoSync.intervalSec) return;
+    stopAutoSyncLoop();
+    autoSyncIntervalSec = config.autoSync.intervalSec;
+    autoSyncTimer = setInterval(() => {
+      void skipIfBusy(runAutoSyncTick);
+    }, autoSyncIntervalSec * 1000);
+    autoSyncTimer.unref?.();
   };
 
   const sleep = async (ms: number): Promise<void> =>
@@ -625,6 +673,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         }
         if (!config) {
           stopTursoSyncLoop();
+          stopAutoSyncLoop();
           await showToast(
             ctx.client,
             'Configure opencode-synced with /sync-init or link to an existing repo with /sync-link',
@@ -649,6 +698,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
             runSecretsPullIfConfigured,
           });
           ensureTursoSyncLoop(config);
+          ensureAutoSyncLoop(config);
           if (tursoWarning) {
             log.warn(tursoWarning);
             await showToast(ctx.client, tursoWarning, 'warning');
@@ -1415,6 +1465,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
       }),
     dispose: () => {
       stopTursoSyncLoop();
+      stopAutoSyncLoop();
     },
   };
 }
@@ -1442,6 +1493,114 @@ async function isRepoPathTracked(
 
 function toRepoRelativePath(repoRoot: string, absolutePath: string): string {
   return path.relative(repoRoot, absolutePath).split(path.sep).join('/');
+}
+
+export interface AutoSyncState {
+  /** Remote head that was last reported as conflicting, so the notice is shown once. */
+  lastConflictHead?: string;
+}
+
+export type AutoSyncResult = 'idle' | 'pulled' | 'pushed' | 'conflict' | 'skipped';
+
+/**
+ * One periodic sync pass. Unlike the startup flow it never overwrites unpushed local edits: local
+ * config is staged first, and if the remote also changed the pass stops and asks for a manual
+ * `pull`/`push` instead.
+ */
+export async function runAutoSyncCycle(
+  ctx: SyncServiceContext,
+  locations: ReturnType<typeof resolveSyncLocations>,
+  config: NormalizedSyncConfig,
+  log: Logger,
+  state: AutoSyncState,
+  options: {
+    ensureAuthFilesNotTracked: (repoRoot: string, config: NormalizedSyncConfig) => Promise<void>;
+    runSecretsPullIfConfigured: (config: NormalizedSyncConfig) => Promise<void>;
+  }
+): Promise<AutoSyncResult> {
+  const repoRoot = resolveRepoRoot(config, locations);
+  await ensureRepoCloned(ctx.$, config, repoRoot);
+  await ensureSensitiveSyncPolicy(ctx, locations, config);
+  await options.ensureAuthFilesNotTracked(repoRoot, config);
+  const branch = await resolveBranch(ctx, config, repoRoot);
+
+  if (await hasLocalChanges(ctx.$, repoRoot)) {
+    log.warn('Auto sync skipped: the sync repo has uncommitted changes', { repoRoot });
+    return 'skipped';
+  }
+
+  try {
+    await ctx.$`git -C ${repoRoot} fetch --prune`.quiet();
+  } catch (error) {
+    log.debug('Auto sync skipped: fetch failed', { error: formatError(error) });
+    return 'skipped';
+  }
+  const remoteExists = await hasRemoteBranch(ctx.$, repoRoot, branch);
+  const { behind } = remoteExists
+    ? await getAheadBehind(ctx.$, repoRoot, `origin/${branch}`)
+    : { behind: 0 };
+  if (behind > 0 && !config.autoSync.pull) return 'skipped';
+  if (behind === 0 && !config.autoSync.push) return 'idle';
+
+  const overrides = await loadOverrides(locations);
+  const plan = buildSyncPlan(config, locations, repoRoot);
+  await syncLocalToRepo(plan, overrides, {
+    overridesPath: locations.overridesPath,
+    allowMcpSecrets: canCommitMcpSecrets(config),
+  });
+  const localChanged = await hasLocalChanges(ctx.$, repoRoot);
+
+  if (behind > 0) {
+    if (localChanged) {
+      await discardCloneChanges(ctx.$, repoRoot);
+      const remoteHead = await readRemoteHead(ctx.$, repoRoot, branch);
+      if (remoteHead !== state.lastConflictHead) {
+        state.lastConflictHead = remoteHead;
+        await showToast(
+          ctx.client,
+          'Local and remote opencode config both changed. Auto sync paused: run pull or push manually.',
+          'warning'
+        );
+      }
+      return 'conflict';
+    }
+    const update = await fetchAndFastForward(ctx.$, repoRoot, branch);
+    if (!update.updated) return 'idle';
+    log.info('Auto sync pulled remote changes', { branch });
+    await syncRepoToLocal(plan, overrides);
+    await options.runSecretsPullIfConfigured(config);
+    await updateState(locations, {
+      lastPull: new Date().toISOString(),
+      lastRemoteUpdate: new Date().toISOString(),
+    });
+    await showToast(ctx.client, 'Config updated. Restart opencode to apply.', 'info');
+    return 'pulled';
+  }
+
+  if (!localChanged) return 'idle';
+  await assertNoOversizedUnpushedHistory(ctx.$, repoRoot, branch);
+  const message = await generateCommitMessage(
+    { client: ctx.client, $: ctx.$, ai: ctx.ai },
+    repoRoot
+  );
+  log.info('Auto sync pushing local changes', { message });
+  await commitAll(ctx.$, repoRoot, message);
+  await pushBranch(ctx.$, repoRoot, branch);
+  await updateState(locations, { lastPush: new Date().toISOString() });
+  return 'pushed';
+}
+
+async function discardCloneChanges($: Shell, repoRoot: string): Promise<void> {
+  await $`git -C ${repoRoot} reset --hard HEAD`.quiet();
+  await $`git -C ${repoRoot} clean -fd`.quiet();
+}
+
+async function readRemoteHead($: Shell, repoRoot: string, branch: string): Promise<string> {
+  try {
+    return (await $`git -C ${repoRoot} rev-parse ${`origin/${branch}`}`.quiet().text()).trim();
+  } catch {
+    return '';
+  }
 }
 
 async function runStartup(

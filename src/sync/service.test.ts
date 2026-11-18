@@ -5,10 +5,11 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import type { PluginInput } from '@opencode-ai/plugin';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { loadState, loadSyncConfig, writeState, writeSyncConfig } from './config.js';
 import { resolveSyncLocations } from './paths.js';
-import { createSyncService } from './service.js';
+import { createSyncService, runAutoSyncCycle } from './service.js';
+import { createLogger } from './utils.js';
 
 const GIT_CONTEXT_KEYS = [
   'GIT_DIR',
@@ -62,7 +63,7 @@ function shellQuote(value: unknown): string {
   return `'${String(value).replaceAll("'", `'\\''`)}'`;
 }
 
-function createClient(): PluginInput['client'] {
+function createClient(toasts: string[] = []): PluginInput['client'] {
   return {
     app: { log: async () => ({}) },
     config: { get: async () => ({ data: {} }) },
@@ -72,7 +73,12 @@ function createClient(): PluginInput['client'] {
       prompt: async () => ({ data: null }),
       status: async () => ({ data: {} }),
     },
-    tui: { showToast: async () => ({}) },
+    tui: {
+      showToast: async (input: { body?: { message?: string } }) => {
+        toasts.push(input?.body?.message ?? '');
+        return {};
+      },
+    },
   } as unknown as PluginInput['client'];
 }
 
@@ -361,4 +367,174 @@ describe('explicit Git remote service flow', () => {
       );
     });
   }, 30_000);
+});
+
+describe('auto sync', () => {
+  const noopOptions = {
+    ensureAuthFilesNotTracked: async () => {},
+    runSecretsPullIfConfigured: async () => {},
+  };
+
+  async function enableAutoSync(
+    locations: ReturnType<typeof resolveSyncLocations>,
+    autoSync: { push?: boolean; pull?: boolean; intervalSec?: number } = {}
+  ): Promise<void> {
+    const config = await loadSyncConfig(locations);
+    if (!config) throw new Error('Expected sync config.');
+    await writeSyncConfig(locations, { ...config, autoSync: { enabled: true, ...autoSync } });
+  }
+
+  async function runCycle(
+    root: string,
+    machine: string,
+    toasts: string[] = [],
+    state: { lastConflictHead?: string } = {}
+  ): Promise<string> {
+    useIsolatedHome(path.join(root, machine));
+    const locations = resolveSyncLocations();
+    const config = await loadSyncConfig(locations);
+    if (!config) throw new Error('Expected sync config.');
+    const client = createClient(toasts);
+    return await runAutoSyncCycle(
+      { client, $: createTestShell() },
+      locations,
+      config,
+      createLogger(client),
+      state,
+      noopOptions
+    );
+  }
+
+  it('pushes local edits, pulls remote edits, and never overwrites unpushed local edits', async () => {
+    await withIsolatedEnvironment(async (root) => {
+      const testShell = createTestShell();
+      const remotePath = path.join(root, 'sync-remote.git');
+      await testShell`git init --bare ${remotePath}`.quiet();
+      const remoteHead = async (): Promise<string> =>
+        (await testShell`git --git-dir ${remotePath} rev-parse main`.text()).trim();
+
+      useIsolatedHome(path.join(root, 'machine-a'));
+      const aLocations = resolveSyncLocations();
+      await fs.mkdir(aLocations.configRoot, { recursive: true });
+      const aConfig = path.join(aLocations.configRoot, 'opencode.json');
+      await fs.writeFile(aConfig, '{"theme":"base"}\n', 'utf8');
+      const aService = createSyncService({ client: createClient(), $: testShell });
+      await aService.init({ repo: remotePath, branch: 'main' });
+      // opencode-synced.jsonc is itself synced, so the autoSync setting roams to other machines.
+      await enableAutoSync(aLocations);
+      expect(await runCycle(root, 'machine-a')).toBe('pushed');
+
+      useIsolatedHome(path.join(root, 'machine-b'));
+      const bLocations = resolveSyncLocations();
+      const bConfig = path.join(bLocations.configRoot, 'opencode.json');
+      await createSyncService({ client: createClient(), $: testShell }).link({
+        repo: remotePath,
+        branch: 'main',
+      });
+      expect((await loadSyncConfig(bLocations))?.autoSync.enabled).toBe(true);
+
+      expect(await runCycle(root, 'machine-b')).toBe('idle');
+
+      await fs.writeFile(bConfig, '{"theme":"from-b"}\n', 'utf8');
+      const headBeforePush = await remoteHead();
+      expect(await runCycle(root, 'machine-b')).toBe('pushed');
+      expect(await remoteHead()).not.toBe(headBeforePush);
+
+      expect(await runCycle(root, 'machine-a')).toBe('pulled');
+      await expect(fs.readFile(aConfig, 'utf8')).resolves.toContain('from-b');
+      expect(await runCycle(root, 'machine-a')).toBe('idle');
+
+      await fs.writeFile(bConfig, '{"theme":"b-again"}\n', 'utf8');
+      expect(await runCycle(root, 'machine-b')).toBe('pushed');
+      const headWithBothSides = await remoteHead();
+
+      await fs.writeFile(aConfig, '{"theme":"a-local-edit"}\n', 'utf8');
+      const toasts: string[] = [];
+      const state: { lastConflictHead?: string } = {};
+      expect(await runCycle(root, 'machine-a', toasts, state)).toBe('conflict');
+      expect(await runCycle(root, 'machine-a', toasts, state)).toBe('conflict');
+      await expect(fs.readFile(aConfig, 'utf8')).resolves.toContain('a-local-edit');
+      expect(await remoteHead()).toBe(headWithBothSides);
+      expect(toasts.filter((message) => message.includes('both changed'))).toHaveLength(1);
+      const cloneStatus =
+        await testShell`git -C ${aLocations.defaultRepoDir} status --porcelain`.text();
+      expect(cloneStatus.trim()).toBe('');
+    });
+  }, 90_000);
+
+  it('respects the pull and push switches', async () => {
+    await withIsolatedEnvironment(async (root) => {
+      const testShell = createTestShell();
+      const remotePath = path.join(root, 'sync-remote.git');
+      await testShell`git init --bare ${remotePath}`.quiet();
+
+      useIsolatedHome(path.join(root, 'machine-a'));
+      const aLocations = resolveSyncLocations();
+      await fs.mkdir(aLocations.configRoot, { recursive: true });
+      const aConfig = path.join(aLocations.configRoot, 'opencode.json');
+      await fs.writeFile(aConfig, '{"theme":"base"}\n', 'utf8');
+      await createSyncService({ client: createClient(), $: testShell }).init({
+        repo: remotePath,
+        branch: 'main',
+      });
+
+      useIsolatedHome(path.join(root, 'machine-b'));
+      const bLocations = resolveSyncLocations();
+      const bConfig = path.join(bLocations.configRoot, 'opencode.json');
+      await createSyncService({ client: createClient(), $: testShell }).link({
+        repo: remotePath,
+        branch: 'main',
+      });
+      await enableAutoSync(bLocations, { push: false });
+      await fs.writeFile(bConfig, '{"theme":"b-edit"}\n', 'utf8');
+      expect(await runCycle(root, 'machine-b')).toBe('idle');
+      const clonedStatus =
+        await testShell`git -C ${bLocations.defaultRepoDir} status --porcelain`.text();
+      expect(clonedStatus.trim()).toBe('');
+
+      await fs.writeFile(bConfig, '{"theme":"base"}\n', 'utf8');
+      useIsolatedHome(path.join(root, 'machine-a'));
+      await fs.writeFile(aConfig, '{"theme":"a-edit"}\n', 'utf8');
+      await createSyncService({ client: createClient(), $: testShell }).push();
+
+      useIsolatedHome(path.join(root, 'machine-b'));
+      await enableAutoSync(bLocations, { pull: false });
+      expect(await runCycle(root, 'machine-b')).toBe('skipped');
+      await expect(fs.readFile(bConfig, 'utf8')).resolves.toContain('base');
+    });
+  }, 90_000);
+
+  it('schedules a timer only when enabled and clears it on dispose', async () => {
+    await withIsolatedEnvironment(async (root) => {
+      const testShell = createTestShell();
+      const remotePath = path.join(root, 'sync-remote.git');
+      await testShell`git init --bare ${remotePath}`.quiet();
+
+      useIsolatedHome(path.join(root, 'machine-a'));
+      const locations = resolveSyncLocations();
+      await fs.mkdir(locations.configRoot, { recursive: true });
+      await fs.writeFile(path.join(locations.configRoot, 'opencode.json'), '{}\n', 'utf8');
+      const service = createSyncService({ client: createClient(), $: testShell });
+      await service.init({ repo: remotePath, branch: 'main' });
+
+      const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+      const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+      try {
+        await service.startupSync();
+        expect(setIntervalSpy).not.toHaveBeenCalled();
+
+        await enableAutoSync(locations, { intervalSec: 45 });
+        await service.startupSync();
+        expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+        expect(setIntervalSpy.mock.calls[0]?.[1]).toBe(45_000);
+
+        service.dispose();
+        expect(clearIntervalSpy).toHaveBeenCalled();
+      } finally {
+        service.dispose();
+        setIntervalSpy.mockRestore();
+        clearIntervalSpy.mockRestore();
+      }
+    });
+  }, 60_000);
 });
