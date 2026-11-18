@@ -26,6 +26,23 @@ export interface SecretsBackendConfig {
 
 export type SessionBackendType = 'git' | 'turso';
 
+export interface OpenChamberSettings {
+  enabled?: boolean;
+  /** Override for the local preferences file. Defaults to `<config dir>/openchamber/preferences.json`. */
+  path?: string;
+  /** Field names (a trailing `*` is a prefix wildcard) to sync instead of the default list. */
+  include?: string[];
+  /** Field names (a trailing `*` is a prefix wildcard) that are never synced. */
+  exclude?: string[];
+}
+
+export interface NormalizedOpenChamberSettings {
+  enabled: boolean;
+  path?: string;
+  include: string[];
+  exclude: string[];
+}
+
 export interface TursoSessionBackendSettings {
   database?: string;
   url?: string;
@@ -61,6 +78,7 @@ export interface SyncConfig {
   includeModelFavorites?: boolean;
   includeOpencodeSkills?: boolean;
   includeAgentsDir?: boolean;
+  openChamber?: OpenChamberSettings;
   secretsBackend?: SecretsBackendConfig;
   extraSecretPaths?: string[];
   extraConfigPaths?: string[];
@@ -75,6 +93,7 @@ export interface NormalizedSyncConfig extends SyncConfig {
   includeModelFavorites: boolean;
   includeOpencodeSkills: boolean;
   includeAgentsDir: boolean;
+  openChamber: NormalizedOpenChamberSettings;
   secretsBackend?: SecretsBackendConfig;
   extraSecretPaths: string[];
   extraConfigPaths: string[];
@@ -168,6 +187,22 @@ export function normalizeSessionBackend(
   };
 }
 
+function normalizeStringList(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+}
+
+export function normalizeOpenChamber(input: unknown): NormalizedOpenChamberSettings {
+  const settings = isPlainObject(input) ? input : {};
+  const customPath = typeof settings.path === 'string' ? settings.path.trim() : '';
+  return {
+    enabled: settings.enabled === true,
+    path: customPath || undefined,
+    include: normalizeStringList(settings.include),
+    exclude: normalizeStringList(settings.exclude),
+  };
+}
+
 export function isTursoSessionBackend(config: SyncConfig | NormalizedSyncConfig): boolean {
   if (!config.includeSessions) return false;
   const normalized = normalizeSessionBackend(config.sessionBackend);
@@ -188,6 +223,7 @@ export function normalizeSyncConfig(config: SyncConfig): NormalizedSyncConfig {
     includeModelFavorites,
     includeOpencodeSkills,
     includeAgentsDir,
+    openChamber: normalizeOpenChamber(config.openChamber),
     secretsBackend: normalizeSecretsBackend(config.secretsBackend),
     extraSecretPaths: Array.isArray(config.extraSecretPaths) ? config.extraSecretPaths : [],
     extraConfigPaths: Array.isArray(config.extraConfigPaths) ? config.extraConfigPaths : [],

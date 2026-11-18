@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import type { NormalizedSyncConfig, SyncConfig } from './config.js';
 import { hasSecretsBackend, isTursoSessionBackend } from './config.js';
+import type { OpenChamberPlan } from './openchamber.js';
 
 export interface XdgPaths {
   homeDir: string;
@@ -204,6 +205,25 @@ export function resolveRepoRoot(
   }
 
   return locations.defaultRepoDir;
+}
+
+export function resolveOpenChamberPlan(
+  config: NormalizedSyncConfig,
+  locations: SyncLocations,
+  repoRoot: string,
+  platform: NodeJS.Platform = process.platform
+): OpenChamberPlan | null {
+  if (!config.openChamber.enabled) return null;
+  const pathApi = pathApiFor(platform);
+  const localPath = config.openChamber.path
+    ? pathApi.resolve(expandHome(config.openChamber.path, locations.xdg.homeDir, platform))
+    : pathApi.join(locations.xdg.configDir, 'openchamber', 'preferences.json');
+  return {
+    localPath,
+    repoPath: pathApi.join(repoRoot, 'config', 'openchamber', 'preferences.json'),
+    include: config.openChamber.include,
+    exclude: config.openChamber.exclude,
+  };
 }
 
 export function buildSyncPlan(

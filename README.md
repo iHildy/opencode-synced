@@ -135,6 +135,7 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
   "includeModelFavorites": true,
   "includeOpencodeSkills": true,
   "includeAgentsDir": true,
+  "openChamber": { "enabled": false },
   "extraSecretPaths": [],
   "extraConfigPaths": [],
 }
@@ -154,6 +155,43 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 `~/.agents/` is enabled by default and may contain instructions or skills you consider private.
 Review it before syncing, keep the sync repository private when needed, or set
 `"includeAgentsDir": false` to opt out.
+
+### OpenChamber preferences
+
+If you use [OpenChamber](https://github.com/openchamber/openchamber) as the opencode UI, its settings
+can be synced too. This is off by default:
+
+```jsonc
+{
+  "openChamber": {
+    "enabled": true,
+    // optional: replace the default field list, "*" at the end is a prefix wildcard
+    "include": ["darkThemeId", "lightThemeId", "notifyOn*", "favoriteModels", "fontSize"],
+    // optional: never sync these
+    "exclude": ["customProviderIcons"],
+    // optional: defaults to <config dir>/openchamber/preferences.json
+    "path": "~/.config/openchamber/preferences.json"
+  }
+}
+```
+
+OpenChamber stores `preferences.json` as `{ "fields": { "<name>": { "value": ..., "updatedAt": ... } } }`.
+Fields are merged one by one and the **newest `updatedAt` wins**, in both directions, so two machines never
+overwrite each other's unrelated settings.
+
+- Default fields: themes, notification settings, favourite and hidden models, favourite agents,
+  collapsed model providers, custom provider icons, and a few behaviour toggles. Selected and recent
+  models, projects and everything else stay local unless you add them to `include`.
+- Field names that look like credentials (`token`, `secret`, `password`, `credential`, `private`,
+  `api key`, `vapid`, `identity`) are never synced, even if listed in `include`.
+- Per-device `surfaces` data (for example a theme imported on one machine) is never written to the repo
+  and is preserved locally on pull.
+- The repo copy lives at `config/openchamber/preferences.json`. The local file is only changed when a
+  repo field is newer; it is written atomically, keeps its permissions, and a one-time
+  `preferences.json.pre-opencode-synced` backup is kept. A missing local file is never created, a
+  malformed file is skipped, and a `version` mismatch skips the merge.
+- Other OpenChamber files (relay identity, GitHub auth, git identities, projects, chat history,
+  search index) are never read.
 
 Disable default directory sync by setting:
 - `"includeOpencodeSkills": false` to skip `~/.config/opencode/skills/`

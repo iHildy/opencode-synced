@@ -27,7 +27,12 @@ import {
 import { SyncCommandError, SyncConfigMissingError } from './errors.js';
 import type { SyncLockInfo } from './lock.js';
 import { withSyncLock } from './lock.js';
-import { buildSyncPlan, resolveRepoRoot, resolveSyncLocations } from './paths.js';
+import {
+  buildSyncPlan,
+  resolveOpenChamberPlan,
+  resolveRepoRoot,
+  resolveSyncLocations,
+} from './paths.js';
 import {
   commitAll,
   ensureRepoCloned,
@@ -737,6 +742,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         `Model favorites: ${includeModelFavorites}`,
         `Skills: ${includeOpencodeSkills}`,
         `Home .agents: ${includeAgentsDir}`,
+        `OpenChamber preferences: ${config.openChamber.enabled ? 'enabled' : 'disabled'}`,
         `Last pull: ${lastPull}`,
         `Last push: ${lastPush}`,
         `Working tree: ${changesLabel}`,
@@ -809,6 +815,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
           await syncLocalToRepo(plan, overrides, {
             overridesPath: locations.overridesPath,
             allowMcpSecrets: canCommitMcpSecrets(config),
+            openChamber: resolveOpenChamberPlan(config, locations, repoRoot),
           });
           await assertNoOversizedUnpushedHistory(ctx.$, repoRoot, branch);
 
@@ -923,7 +930,9 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
-        await syncRepoToLocal(plan, overrides);
+        await syncRepoToLocal(plan, overrides, {
+          openChamber: resolveOpenChamberPlan(config, locations, repoRoot),
+        });
 
         await updateState(locations, {
           lastPull: new Date().toISOString(),
@@ -1020,7 +1029,9 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
 
         const overrides = await loadOverrides(locations);
         const plan = buildSyncPlan(config, locations, repoRoot);
-        await syncRepoToLocal(plan, overrides);
+        await syncRepoToLocal(plan, overrides, {
+          openChamber: resolveOpenChamberPlan(config, locations, repoRoot),
+        });
         await runSecretsPullIfConfigured(config);
 
         await updateState(locations, {
@@ -1061,6 +1072,7 @@ export function createSyncService(ctx: SyncServiceContext): SyncService {
         await syncLocalToRepo(plan, overrides, {
           overridesPath: locations.overridesPath,
           allowMcpSecrets: canCommitMcpSecrets(config),
+          openChamber: resolveOpenChamberPlan(config, locations, repoRoot),
         });
         await assertNoOversizedUnpushedHistory(ctx.$, repoRoot, branch);
 
@@ -1479,7 +1491,9 @@ async function runStartup(
     log.info('Pulled remote changes', { branch });
     const overrides = await loadOverrides(locations);
     const plan = buildSyncPlan(config, locations, repoRoot);
-    await syncRepoToLocal(plan, overrides);
+    await syncRepoToLocal(plan, overrides, {
+      openChamber: resolveOpenChamberPlan(config, locations, repoRoot),
+    });
     await options.runSecretsPullIfConfigured(config);
     await updateState(locations, {
       lastPull: new Date().toISOString(),
@@ -1494,6 +1508,7 @@ async function runStartup(
   await syncLocalToRepo(plan, overrides, {
     overridesPath: locations.overridesPath,
     allowMcpSecrets: canCommitMcpSecrets(config),
+    openChamber: resolveOpenChamberPlan(config, locations, repoRoot),
   });
   await assertNoOversizedUnpushedHistory(ctx.$, repoRoot, branch);
   const changes = await hasLocalChanges(ctx.$, repoRoot);

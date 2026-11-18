@@ -22,6 +22,11 @@ import {
   mergeOverrides,
   stripOverrideKeys,
 } from './mcp-secrets.js';
+import {
+  type OpenChamberPlan,
+  pullOpenChamberPreferences,
+  pushOpenChamberPreferences,
+} from './openchamber.js';
 import type { ExtraPathPlan, SyncItem, SyncPlan } from './paths.js';
 import { fromPortablePath, normalizePath, toPortablePath } from './paths.js';
 
@@ -51,7 +56,7 @@ interface ExtraPathManifest {
 export async function syncRepoToLocal(
   plan: SyncPlan,
   overrides: Record<string, unknown> | null,
-  options: { chunkOptions?: ChunkOptions } = {}
+  options: { chunkOptions?: ChunkOptions; openChamber?: OpenChamberPlan | null } = {}
 ): Promise<void> {
   for (const item of plan.items) {
     if (item.chunkLargeFiles) {
@@ -63,6 +68,10 @@ export async function syncRepoToLocal(
 
   await applyExtraPaths(plan, plan.extraConfigs);
   await applyExtraPaths(plan, plan.extraSecrets);
+
+  if (options.openChamber) {
+    await pullOpenChamberPreferences(options.openChamber);
+  }
 
   if (overrides && Object.keys(overrides).length > 0) {
     await applyOverridesToLocalConfig(plan, overrides);
@@ -93,6 +102,7 @@ export async function syncLocalToRepo(
     overridesPath?: string;
     allowMcpSecrets?: boolean;
     chunkOptions?: ChunkOptions;
+    openChamber?: OpenChamberPlan | null;
   } = {}
 ): Promise<void> {
   const configItems = plan.items.filter((item) => item.isConfigFile);
@@ -148,6 +158,9 @@ export async function syncLocalToRepo(
 
   await writeExtraPathManifest(plan, plan.extraConfigs);
   await writeExtraPathManifest(plan, plan.extraSecrets);
+  if (options.openChamber) {
+    await pushOpenChamberPreferences(options.openChamber);
+  }
   await cleanupUnreferencedChunkStores(plan.repoRoot);
 }
 
