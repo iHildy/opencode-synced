@@ -902,3 +902,59 @@ describe('MCP secret scrub round trip', () => {
     });
   });
 });
+
+describe('OpenChamber preferences in the sync flow', () => {
+  it('pushes allowlisted fields to the repo and pulls newer ones back', async () => {
+    await withTempDir(async (root) => {
+      const repoRoot = path.join(root, 'repo');
+      const homeDir = path.join(root, 'home');
+      const plan = createPlan(repoRoot, homeDir, []);
+      const localPath = path.join(homeDir, '.config', 'openchamber', 'preferences.json');
+      const repoPath = path.join(repoRoot, 'config', 'openchamber', 'preferences.json');
+      const openChamber = { localPath, repoPath, include: [], exclude: [] };
+      await fs.mkdir(path.dirname(localPath), { recursive: true });
+      await fs.writeFile(
+        localPath,
+        JSON.stringify({
+          version: 1,
+          fields: {
+            darkThemeId: { value: 'dark-a', updatedAt: 1 },
+            lastSelectedModel: { value: 'private/model', updatedAt: 1 },
+          },
+        }),
+        'utf8'
+      );
+
+      await syncLocalToRepo(plan, null, { openChamber });
+      const pushed = JSON.parse(await fs.readFile(repoPath, 'utf8'));
+      expect(Object.keys(pushed.fields)).toEqual(['darkThemeId']);
+
+      pushed.fields.darkThemeId = { value: 'dark-b', updatedAt: 5 };
+      await fs.writeFile(repoPath, JSON.stringify(pushed), 'utf8');
+      await syncRepoToLocal(plan, null, { openChamber });
+      const pulled = JSON.parse(await fs.readFile(localPath, 'utf8'));
+      expect(pulled.fields.darkThemeId.value).toBe('dark-b');
+      expect(pulled.fields.lastSelectedModel.value).toBe('private/model');
+    });
+  });
+
+  it('leaves OpenChamber alone when no plan is passed', async () => {
+    await withTempDir(async (root) => {
+      const repoRoot = path.join(root, 'repo');
+      const homeDir = path.join(root, 'home');
+      const localPath = path.join(homeDir, '.config', 'openchamber', 'preferences.json');
+      await fs.mkdir(repoRoot, { recursive: true });
+      await fs.mkdir(path.dirname(localPath), { recursive: true });
+      await fs.writeFile(
+        localPath,
+        '{"version":1,"fields":{"darkThemeId":{"value":"x","updatedAt":1}}}'
+      );
+
+      await syncLocalToRepo(createPlan(repoRoot, homeDir, []), null);
+
+      await expect(
+        fs.access(path.join(repoRoot, 'config', 'openchamber', 'preferences.json'))
+      ).rejects.toThrow();
+    });
+  });
+});
