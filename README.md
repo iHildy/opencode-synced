@@ -135,6 +135,7 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
   "includeModelFavorites": true,
   "includeOpencodeSkills": true,
   "includeAgentsDir": true,
+  "pullMode": "replace",
   "extraSecretPaths": [],
   "extraConfigPaths": [],
 }
@@ -154,6 +155,16 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 `~/.agents/` is enabled by default and may contain instructions or skills you consider private.
 Review it before syncing, keep the sync repository private when needed, or set
 `"includeAgentsDir": false` to opt out.
+
+### Pull mode
+
+`pullMode` controls how `/sync-pull` (and the startup pull) applies synced **directories**:
+
+- `"replace"` (default): each synced directory is replaced by the repo copy, so files that exist
+  only on this machine inside that directory (for example a local-only agent, command or plugin)
+  are deleted.
+- `"merge"`: repo files are copied over local ones and files that exist only locally are left in
+  place. Files deleted in the repo are not deleted locally either.
 
 Disable default directory sync by setting:
 - `"includeOpencodeSkills": false` to skip `~/.config/opencode/skills/`

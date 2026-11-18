@@ -902,3 +902,43 @@ describe('MCP secret scrub round trip', () => {
     });
   });
 });
+
+describe('syncRepoToLocal pull mode for directories', () => {
+  async function seedDirectories(root: string): Promise<{ plan: SyncPlan; localDir: string }> {
+    const repoRoot = path.join(root, 'repo');
+    const homeDir = path.join(root, 'home');
+    const repoDir = path.join(repoRoot, 'config', 'agents');
+    const localDir = path.join(homeDir, '.config', 'opencode', 'agents');
+    await fs.mkdir(repoDir, { recursive: true });
+    await fs.mkdir(localDir, { recursive: true });
+    await fs.writeFile(path.join(repoDir, 'shared.md'), 'from-repo', 'utf8');
+    await fs.writeFile(path.join(localDir, 'shared.md'), 'stale-local', 'utf8');
+    await fs.writeFile(path.join(localDir, 'local-only.md'), 'keep-me', 'utf8');
+    const plan = createPlan(repoRoot, homeDir, [
+      { localPath: localDir, repoPath: repoDir, type: 'dir', isSecret: false, isConfigFile: false },
+    ]);
+    return { plan, localDir };
+  }
+
+  it('replaces the directory by default, removing local-only files', async () => {
+    await withTempDir(async (root) => {
+      const { plan, localDir } = await seedDirectories(root);
+
+      await syncRepoToLocal(plan, null);
+
+      expect(await fs.readFile(path.join(localDir, 'shared.md'), 'utf8')).toBe('from-repo');
+      await expect(fs.access(path.join(localDir, 'local-only.md'))).rejects.toThrow();
+    });
+  });
+
+  it('keeps local-only files in merge mode while updating shared files', async () => {
+    await withTempDir(async (root) => {
+      const { plan, localDir } = await seedDirectories(root);
+
+      await syncRepoToLocal(plan, null, { pullMode: 'merge' });
+
+      expect(await fs.readFile(path.join(localDir, 'shared.md'), 'utf8')).toBe('from-repo');
+      expect(await fs.readFile(path.join(localDir, 'local-only.md'), 'utf8')).toBe('keep-me');
+    });
+  });
+});

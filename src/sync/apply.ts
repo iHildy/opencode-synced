@@ -11,6 +11,7 @@ import {
   chmodIfExists,
   deepMerge,
   hasOwn,
+  type PullMode,
   parseJsonc,
   pathExists,
   stripOverrides,
@@ -51,18 +52,19 @@ interface ExtraPathManifest {
 export async function syncRepoToLocal(
   plan: SyncPlan,
   overrides: Record<string, unknown> | null,
-  options: { chunkOptions?: ChunkOptions } = {}
+  options: { chunkOptions?: ChunkOptions; pullMode?: PullMode } = {}
 ): Promise<void> {
+  const merge = options.pullMode === 'merge';
   for (const item of plan.items) {
     if (item.chunkLargeFiles) {
       await copyChunkableItemFromRepo(item, plan.repoRoot, options.chunkOptions);
       continue;
     }
-    await copyItem(item.repoPath, item.localPath, item.type);
+    await copyItem(item.repoPath, item.localPath, item.type, false, merge);
   }
 
-  await applyExtraPaths(plan, plan.extraConfigs);
-  await applyExtraPaths(plan, plan.extraSecrets);
+  await applyExtraPaths(plan, plan.extraConfigs, merge);
+  await applyExtraPaths(plan, plan.extraSecrets, merge);
 
   if (overrides && Object.keys(overrides).length > 0) {
     await applyOverridesToLocalConfig(plan, overrides);
@@ -424,7 +426,8 @@ async function copyItem(
   sourcePath: string,
   destinationPath: string,
   type: SyncItem['type'],
-  removeWhenMissing = false
+  removeWhenMissing = false,
+  merge = false
 ): Promise<void> {
   if (
     type === 'file' &&
@@ -447,7 +450,9 @@ async function copyItem(
     return;
   }
 
-  await removePath(destinationPath);
+  if (!merge) {
+    await removePath(destinationPath);
+  }
   await copyDirRecursive(sourcePath, destinationPath);
 }
 
@@ -584,7 +589,7 @@ async function removePath(targetPath: string): Promise<void> {
   await fs.rm(targetPath, { recursive: true, force: true });
 }
 
-async function applyExtraPaths(plan: SyncPlan, extra: ExtraPathPlan): Promise<void> {
+async function applyExtraPaths(plan: SyncPlan, extra: ExtraPathPlan, merge = false): Promise<void> {
   const allowlist = extra.allowlist;
   if (allowlist.length === 0) return;
 
@@ -606,7 +611,7 @@ async function applyExtraPaths(plan: SyncPlan, extra: ExtraPathPlan): Promise<vo
 
     if (!(await pathExists(repoPath))) continue;
 
-    await copyItem(repoPath, localPath, entryType);
+    await copyItem(repoPath, localPath, entryType, false, merge);
     await applyExtraPathModes(localPath, entry);
   }
 }
