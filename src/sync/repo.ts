@@ -239,6 +239,47 @@ export async function fetchAndFastForward(
   return { updated: false, branch };
 }
 
+export interface RemoteDrift {
+  /** Commits in the local sync repo that are not on the remote branch. */
+  ahead: number;
+  /** Commits on the remote branch that a pull would bring in. */
+  behind: number;
+  /** `git diff --name-status` lines for what a pull would change. */
+  changes: string[];
+}
+
+/**
+ * Read-only check of how the local sync repo relates to its remote. Fetches, but never moves the
+ * branch or the working tree. Returns null when the remote cannot be reached.
+ */
+export async function inspectRemoteDrift(
+  $: Shell,
+  repoDir: string,
+  branch: string
+): Promise<RemoteDrift | null> {
+  try {
+    await $`git -C ${repoDir} fetch --prune`.quiet();
+  } catch {
+    return null;
+  }
+  if (!(await hasRemoteBranch($, repoDir, branch))) {
+    return { ahead: 0, behind: 0, changes: [] };
+  }
+  const remoteRef = `origin/${branch}`;
+  const { ahead, behind } = await getAheadBehind($, repoDir, remoteRef);
+  if (behind === 0) return { ahead, behind, changes: [] };
+  try {
+    const output = await $`git -C ${repoDir} diff --name-status HEAD ${remoteRef}`.quiet().text();
+    const changes = output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return { ahead, behind, changes };
+  } catch {
+    return { ahead, behind, changes: [] };
+  }
+}
+
 export async function getRepoStatus($: Shell, repoDir: string): Promise<RepoStatus> {
   const branch = await getCurrentBranch($, repoDir);
   const changes = await getStatusLines($, repoDir);
@@ -420,7 +461,7 @@ async function getAheadBehind(
   }
 }
 
-async function getStatusLines($: Shell, repoDir: string): Promise<string[]> {
+export async function getStatusLines($: Shell, repoDir: string): Promise<string[]> {
   try {
     const output = await $`git -C ${repoDir} status --porcelain`.quiet().text();
     return output

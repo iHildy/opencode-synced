@@ -294,6 +294,70 @@ describe('explicit Git remote service flow', () => {
     });
   }, 30_000);
 
+  it('reports drift in status and supports dry runs for pull and push', async () => {
+    await withIsolatedEnvironment(async (root) => {
+      const testShell = createTestShell();
+      const remotePath = path.join(root, 'sync-remote.git');
+      await testShell`git init --bare ${remotePath}`.quiet();
+      const remoteHead = async (): Promise<string> =>
+        (await testShell`git --git-dir ${remotePath} rev-parse main`.text()).trim();
+
+      useIsolatedHome(path.join(root, 'machine-a'));
+      const machineALocations = resolveSyncLocations();
+      await fs.mkdir(machineALocations.configRoot, { recursive: true });
+      const machineAConfig = path.join(machineALocations.configRoot, 'opencode.json');
+      await fs.writeFile(machineAConfig, '{"theme":"one"}\n', 'utf8');
+      const machineAService = createSyncService({ client: createClient(), $: testShell });
+      await machineAService.init({ repo: remotePath, branch: 'main' });
+
+      useIsolatedHome(path.join(root, 'machine-b'));
+      const machineBLocations = resolveSyncLocations();
+      const machineBConfig = path.join(machineBLocations.configRoot, 'opencode.json');
+      const machineBService = createSyncService({ client: createClient(), $: testShell });
+      await machineBService.link({ repo: remotePath, branch: 'main' });
+
+      const inSync = await machineBService.status();
+      expect(inSync).toContain('Local changes: none');
+      expect(inSync).toContain('Remote: up to date');
+
+      await fs.writeFile(machineBConfig, '{"theme":"two"}\n', 'utf8');
+      const drifted = await machineBService.status();
+      expect(drifted).toContain('Local changes: 1 file(s) differ');
+      expect(drifted).toContain('Working tree: clean');
+
+      const headBeforeDryRun = await remoteHead();
+      const pushDryRun = await machineBService.push({ dryRun: true });
+      expect(pushDryRun).toContain('Dry run: a push would commit these changes');
+      expect(pushDryRun).toContain('update config/opencode.json');
+      expect(await remoteHead()).toBe(headBeforeDryRun);
+      await expect(machineBService.status()).resolves.toContain('Working tree: clean');
+      await expect(fs.readFile(machineBConfig, 'utf8')).resolves.toContain('two');
+
+      const pushed = await machineBService.push();
+      expect(pushed).toContain('Pushed changes:');
+      expect(pushed).toContain('1 file: 1 updated');
+      expect(await remoteHead()).not.toBe(headBeforeDryRun);
+      await expect(machineBService.push({ dryRun: true })).resolves.toContain(
+        'a push would change nothing'
+      );
+
+      useIsolatedHome(path.join(root, 'machine-a'));
+      await expect(machineAService.status()).resolves.toContain(
+        'Remote: 1 commit(s) not yet pulled'
+      );
+      const pullDryRun = await machineAService.pull({ dryRun: true });
+      expect(pullDryRun).toContain('a pull would apply 1 commit');
+      expect(pullDryRun).toContain('update config/opencode.json');
+      await expect(fs.readFile(machineAConfig, 'utf8')).resolves.toContain('one');
+
+      const pulled = await machineAService.pull();
+      expect(pulled).toContain('Remote config applied');
+      expect(pulled).toContain('1 file: 1 updated');
+      await expect(fs.readFile(machineAConfig, 'utf8')).resolves.toContain('two');
+      await expect(machineAService.pull({ dryRun: true })).resolves.toContain('already up to date');
+    });
+  }, 60_000);
+
   it('fails closed with recovery instructions for an oversized unpushed session commit', async () => {
     await withIsolatedEnvironment(async (root) => {
       const testShell = createTestShell();

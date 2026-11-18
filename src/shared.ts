@@ -150,6 +150,7 @@ export interface SyncToolArgs {
   acknowledgePrivateRemote?: boolean;
   setupTurso?: boolean;
   migrateSessions?: boolean;
+  dryRun?: boolean;
 }
 
 export function buildSyncToolInputSchema(): Record<string, unknown> {
@@ -176,6 +177,7 @@ export function buildSyncToolInputSchema(): Record<string, unknown> {
       extraConfigPaths: { type: 'array', items: { type: 'string' } },
       localRepoPath: { type: 'string' },
       acknowledgePrivateRemote: { type: 'boolean' },
+      dryRun: { type: 'boolean' },
       setupTurso: { type: 'boolean' },
       migrateSessions: { type: 'boolean' },
     },
@@ -226,10 +228,10 @@ export async function executeSyncCommand(
       });
     }
     if (args.command === 'pull') {
-      return await service.pull();
+      return await service.pull({ dryRun: args.dryRun });
     }
     if (args.command === 'push') {
-      return await service.push();
+      return await service.push({ dryRun: args.dryRun });
     }
     if (args.command === 'secrets-pull') {
       return await service.secretsPull();
