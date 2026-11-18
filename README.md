@@ -135,6 +135,7 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
   "includeModelFavorites": true,
   "includeOpencodeSkills": true,
   "includeAgentsDir": true,
+  "autoSync": { "enabled": false, "intervalSec": 300, "push": true, "pull": true },
   "extraSecretPaths": [],
   "extraConfigPaths": [],
 }
@@ -154,6 +155,27 @@ Create `~/.config/opencode/opencode-synced.jsonc`:
 `~/.agents/` is enabled by default and may contain instructions or skills you consider private.
 Review it before syncing, keep the sync repository private when needed, or set
 `"includeAgentsDir": false` to opt out.
+
+### Automatic sync
+
+By default config is synced when opencode starts (and when you run pull or push). On a long-running
+opencode server that can leave machines diverged for days. Set `autoSync` to also sync on a timer:
+
+```jsonc
+{
+  "autoSync": { "enabled": true, "intervalSec": 300, "push": true, "pull": true }
+}
+```
+
+- `intervalSec` defaults to 300 and is clamped to at least 30.
+- `push`: commit and push local config changes. `pull`: apply remote changes.
+- A pass never overwrites unpushed local edits. It stages your local config first, and if the remote
+  also changed it stops, leaves your files alone, and shows one notice asking you to run pull or push
+  yourself. Resolve it and the next pass continues.
+- It does nothing while another sync is running, and pulled changes still need an opencode restart.
+- `opencode-synced.jsonc` is itself synced, so enabling this on one machine enables it on the others
+  at their next pull.
+- The Turso `syncIntervalSec` setting is separate and only applies to session sync.
 
 Disable default directory sync by setting:
 - `"includeOpencodeSkills": false` to skip `~/.config/opencode/skills/`

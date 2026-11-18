@@ -152,6 +152,24 @@ describe('normalizeSyncConfig', () => {
     expect(normalized.includeAgentsDir).toBe(false);
   });
 
+  it('normalizes autoSync with a disabled default and a minimum interval', () => {
+    expect(normalizeSyncConfig({}).autoSync).toEqual({
+      enabled: false,
+      intervalSec: 300,
+      push: true,
+      pull: true,
+    });
+    expect(
+      normalizeSyncConfig({ autoSync: { enabled: true, intervalSec: 5, push: false } }).autoSync
+    ).toEqual({ enabled: true, intervalSec: 30, push: false, pull: true });
+    expect(normalizeSyncConfig({ autoSync: { enabled: 'yes' as never } }).autoSync.enabled).toBe(
+      false
+    );
+    expect(normalizeSyncConfig({ autoSync: { intervalSec: 120.9 } }).autoSync.intervalSec).toBe(
+      120
+    );
+  });
+
   it('defaults extra path lists when omitted', () => {
     const normalized = normalizeSyncConfig({ includeSecrets: true });
     expect(normalized.extraSecretPaths).toEqual([]);

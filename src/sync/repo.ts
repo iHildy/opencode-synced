@@ -402,7 +402,7 @@ export async function hasAnyRemoteBranches($: Shell, repoDir: string): Promise<b
   }
 }
 
-async function getAheadBehind(
+export async function getAheadBehind(
   $: Shell,
   repoDir: string,
   remoteRef: string
