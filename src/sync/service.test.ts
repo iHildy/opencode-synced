@@ -294,6 +294,60 @@ describe('explicit Git remote service flow', () => {
     });
   }, 30_000);
 
+  it('never pushes from a pull-only machine but still pulls', async () => {
+    await withIsolatedEnvironment(async (root) => {
+      const testShell = createTestShell();
+      const remotePath = path.join(root, 'sync-remote.git');
+      await testShell`git init --bare ${remotePath}`.quiet();
+      const remoteCommitCount = async (): Promise<string> =>
+        (await testShell`git --git-dir ${remotePath} rev-list --count main`.text()).trim();
+
+      useIsolatedHome(path.join(root, 'machine-a'));
+      const machineALocations = resolveSyncLocations();
+      await fs.mkdir(machineALocations.configRoot, { recursive: true });
+      await fs.writeFile(
+        path.join(machineALocations.configRoot, 'opencode.json'),
+        '{"theme":"machine-a"}\n',
+        'utf8'
+      );
+      const machineAService = createSyncService({ client: createClient(), $: testShell });
+      await machineAService.init({ repo: remotePath, branch: 'main' });
+      const commitsAfterInit = await remoteCommitCount();
+
+      useIsolatedHome(path.join(root, 'machine-b'));
+      const machineBLocations = resolveSyncLocations();
+      const machineBService = createSyncService({ client: createClient(), $: testShell });
+      await machineBService.link({ repo: remotePath, branch: 'main' });
+      const linkedConfig = await loadSyncConfig(machineBLocations);
+      if (!linkedConfig) throw new Error('Expected machine B sync config.');
+      await writeSyncConfig(machineBLocations, { ...linkedConfig, mode: 'pull-only' });
+      await expect(machineBService.status()).resolves.toContain('Mode: pull-only');
+
+      await fs.writeFile(
+        path.join(machineBLocations.configRoot, 'opencode.json'),
+        '{"theme":"machine-b-local"}\n',
+        'utf8'
+      );
+      await expect(machineBService.push()).resolves.toContain('pull-only mode');
+      await machineBService.startupSync();
+      expect(await remoteCommitCount()).toBe(commitsAfterInit);
+
+      useIsolatedHome(path.join(root, 'machine-a'));
+      await fs.writeFile(
+        path.join(machineALocations.configRoot, 'opencode.json'),
+        '{"theme":"machine-a-v2"}\n',
+        'utf8'
+      );
+      await machineAService.push();
+
+      useIsolatedHome(path.join(root, 'machine-b'));
+      await machineBService.pull();
+      await expect(
+        fs.readFile(path.join(machineBLocations.configRoot, 'opencode.json'), 'utf8')
+      ).resolves.toContain('machine-a-v2');
+    });
+  }, 30_000);
+
   it('fails closed with recovery instructions for an oversized unpushed session commit', async () => {
     await withIsolatedEnvironment(async (root) => {
       const testShell = createTestShell();
